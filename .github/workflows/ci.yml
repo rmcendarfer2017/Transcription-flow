@@ -115,6 +115,8 @@ jobs:
         run: python packaging/buildinfo.py portable-zip dist/TranscriptionFlow "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
       - name: Silent install, then check the files, Start menu shortcut and Run value
         run: python packaging/ci_smoke.py install "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+      - name: Installing over it keeps the autostart choice (on, then off)
+        run: python packaging/ci_smoke.py upgrade "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
       - name: The installed copy passes the same smoke test
         run: python packaging/ci_smoke.py frozen "$env:LOCALAPPDATA\Programs\Transcription Flow" tests/fixtures/hello.wav .ci-models
       - name: Silent uninstall removes the app and keeps settings and models

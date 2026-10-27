@@ -78,7 +78,7 @@ def run(platform: str = sys.platform) -> dict:
     return {"ok": ok, "checks": checks}
 
 
-def main() -> int:
-    report = run()
+def main(platform: str = sys.platform) -> int:
+    report = run(platform)
     print(json.dumps(report))
     return 0 if report["ok"] else 1

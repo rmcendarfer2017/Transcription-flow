@@ -27,9 +27,10 @@
 #define ExeName "TranscriptionFlow.exe"
 #define RunValueName "TranscriptionFlow"
 #define DataFolder "TranscriptionFlow"
+#define AppGuid "C41FBC91-05D3-4BBB-ADAB-FBC5C12CBECD"
 
 [Setup]
-AppId={{C41FBC91-05D3-4BBB-ADAB-FBC5C12CBECD}
+AppId={{{#AppGuid}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
@@ -96,7 +97,7 @@ function InitializeSetup(): Boolean;
 begin
   { Read before anything is written: an earlier install of this AppId, and
     whether autostart is on now. }
-  IsUpgrade := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C41FBC91-05D3-4BBB-ADAB-FBC5C12CBECD}_is1');
+  IsUpgrade := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{{#AppGuid}}_is1');
   HadRunValue := RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#RunValueName}');
   Result := True;
 end;

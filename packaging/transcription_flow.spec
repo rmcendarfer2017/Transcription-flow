@@ -35,8 +35,9 @@ a = Analysis(
     # faster_whisper/assets holds the Silero VAD model; our package data is
     # models_manifest.json.
     datas=collect_data_files("faster_whisper") + collect_data_files("transcription_flow"),
-    # main.py imports the UI and the rest inside functions.
-    hiddenimports=collect_submodules("transcription_flow"),
+    # main.py imports the UI and the rest inside functions; pynput and
+    # pystray pick their backends by name at run time.
+    hiddenimports=collect_submodules("transcription_flow") + list(buildinfo.WIN32_BACKENDS),
     runtime_hooks=[str(ROOT / "packaging" / "rthook_no_av.py")],
     excludes=buildinfo.EXCLUDES,
     module_collection_mode=buildinfo.LOOSE_MODULES,

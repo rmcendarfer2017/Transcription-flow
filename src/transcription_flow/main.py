@@ -117,19 +117,16 @@ def run_app(args, models_dir: Path) -> int:
         guard = single_instance.acquire(paths.data_dir())
     except single_instance.AlreadyRunning:
         return _already_running(args)
-    show = listener_error = None
+    show = None
     try:
+        log_file = logsetup.setup(paths.logs_dir())
         if not _command_only(args):
-            # Right after the guard, so a double-click during startup is
+            # Before the settings load, so a double-click during startup is
             # kept until the window can open (review-m4 F8).
             try:
                 show = single_instance.ShowListener(paths.data_dir())
             except OSError as err:  # a second launch then just exits; dictation still works
-                listener_error = err
-        log_file = logsetup.setup(paths.logs_dir())
-        if listener_error is not None:
-            log.warning("second-launch listener not started (%s)",
-                        type(listener_error).__name__)
+                log.warning("second-launch listener not started (%s)", type(err).__name__)
         if args.reset_config:
             config.save(config.Config(), paths.config_file())
             print(f"Settings reset: {paths.config_file()}")

@@ -30,8 +30,11 @@ DESCRIPTION = "Local push-to-talk dictation, inspired by Wispr Flow"
 # user can swap them for modified versions (review-m2 F8).
 LOOSE_MODULES = {"pynput": "py", "pystray": "py"}
 
-# Loaded by name at run time, so check them in the built folder too.
-WIN32_BACKENDS = ("pynput/keyboard/_win32.py", "pystray/_win32.py")
+# pynput and pystray import their Windows backends by name at run time,
+# which PyInstaller's analysis can't see: the spec adds them as hidden
+# imports and check_onedir looks for them. bundlecheck.BACKENDS (the
+# frozen-app check) must name the same modules; a test compares them.
+WIN32_BACKENDS = ("pynput.keyboard._win32", "pystray._win32")
 
 # Not bundled. PyAV's Windows wheel carries an FFmpeg built with x264/x265
 # (GPL); we never decode files (audio reaches faster-whisper as numpy
@@ -227,8 +230,8 @@ def check_onedir(onedir: Path) -> list:
     for module in LOOSE_MODULES:
         if not (internal / module / "__init__.py").is_file():
             problems.append(f"{module} is not loose in _internal/{module}/ (LGPL)")
-    # The Windows backends, which pynput and pystray import at run time.
-    for rel in WIN32_BACKENDS:
+    for module in WIN32_BACKENDS:
+        rel = module.replace(".", "/") + ".py"  # loose files (LOOSE_MODULES)
         if not (internal / rel).is_file():
             problems.append(f"missing _internal/{rel} (a run-time backend)")
     if (internal / "av").exists() or list(internal.glob("av.libs")):

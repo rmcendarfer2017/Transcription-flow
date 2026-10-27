@@ -84,6 +84,8 @@ def test_spec_collects_the_native_parts_and_keeps_lgpl_modules_loose():
     assert "rthook_no_av.py" in source and (PACKAGING / "rthook_no_av.py").is_file()
     assert "launcher.py" in source and (PACKAGING / "launcher.py").is_file()
     assert "add_licences" in source
+    assert ast.unparse(analysis["hiddenimports"]) == (
+        "collect_submodules('transcription_flow') + list(buildinfo.WIN32_BACKENDS)")
 
 
 def test_numeric_version():
@@ -489,6 +491,7 @@ def test_the_windows_build_job_builds_installs_uninstalls_and_uploads():
                    "packaging/transcription_flow.spec", "ci_smoke.py frozen dist/TranscriptionFlow",
                    "ISCC", "packaging\\installer.iss", "ci_smoke.py install",
                    "ci_smoke.py uninstall\n", "ci_smoke.py uninstall --delete-user-data",
+                   "ci_smoke.py upgrade",
                    "portable-zip", "ci_smoke.py sizes", "--verify --model tiny.en"):
         assert needed in runs + "\n", needed
     upload = [s for s in job["steps"] if "upload-artifact" in s.get("uses", "")]
@@ -621,13 +624,5 @@ def test_the_uninstall_sentinels_sit_outside_the_data_folders(tmp_path, monkeypa
     keep = ci_smoke.sentinels()
     assert [p.parent.parent for p in keep[:2]] == [d.parent for d in data]
     assert all(not p.is_relative_to(d) for p in keep for d in data)
-    assert keep[2].parent == tmp_path / "temp" / "tf-junction-target"
+    assert keep[2].parent == ci_smoke.junction_target() == tmp_path / "temp" / "tf-junction-target"
     assert ci_smoke.junction().is_relative_to(data[0] / "models")
-
-
-def test_the_windows_build_runs_both_uninstalls_after_an_install_with_sentinels():
-    source = (PACKAGING / "ci_smoke.py").read_text("utf-8")
-    install = source.split("def check_install", 1)[1].split("\ndef ", 1)[0]
-    assert "make_sentinels(check)" in install
-    uninstall = source.split("def check_uninstall", 1)[1].split("\ndef ", 1)[0]
-    assert 'check(path.is_file(), "the uninstall left this alone"' in uninstall

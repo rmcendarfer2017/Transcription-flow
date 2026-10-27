@@ -14,6 +14,7 @@ import pytest
 import transcription_flow
 from helpers import child_env
 from transcription_flow import bundlecheck
+from transcription_flow import main as app_main
 
 SRC = Path(transcription_flow.__file__).resolve().parent
 
@@ -54,9 +55,7 @@ def fake_site(root: Path, leave_out=()) -> Path:
 
 def run_check(site: Path, platform="win32", **env):
     """bundlecheck.run(platform) in a child with the stand-ins first on the path."""
-    code = ("import json; from transcription_flow import bundlecheck; "
-            f"r = bundlecheck.run({platform!r}); print(json.dumps(r)); "
-            "raise SystemExit(0 if r['ok'] else 1)")
+    code = f"from transcription_flow import bundlecheck; raise SystemExit(bundlecheck.main({platform!r}))"
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                           timeout=120, env=child_env(PYTHONPATH=str(site), **env))
 
@@ -135,6 +134,13 @@ def test_the_hidden_flag_runs_it_and_prints_the_report_last(tmp_path):
     assert result["ok"] is True and result["checks"]["backends"].startswith(
         "no fixed backend on ")
     assert not home.exists()  # it never took the single-instance guard or wrote a log
-    assert "--check-bundle" not in subprocess.run(
-        [sys.executable, "-m", "transcription_flow", "--help"], capture_output=True, text=True,
-        timeout=60, env=child_env()).stdout
+    assert "--check-bundle" not in app_main._parser().format_help()
+
+
+def test_the_build_bundles_and_checks_the_same_backends():
+    sys.path.insert(0, str(SRC.parent.parent / "packaging"))
+    try:
+        import buildinfo
+    finally:
+        sys.path.pop(0)
+    assert buildinfo.WIN32_BACKENDS == bundlecheck.BACKENDS["win32"]

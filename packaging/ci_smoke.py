@@ -2,6 +2,7 @@
 
     python packaging/ci_smoke.py frozen DIR WAV MODELS_DIR   selftest, bundle check, GPU probe
     python packaging/ci_smoke.py install SETUP_EXE            silent install, check what it wrote
+    python packaging/ci_smoke.py upgrade SETUP_EXE            install over it: autostart choice kept
     python packaging/ci_smoke.py uninstall [--delete-user-data]
     python packaging/ci_smoke.py defender PATH                 Defender scan if the runner has it
     python packaging/ci_smoke.py sizes FILE_OR_DIR...          table for the job summary
@@ -101,13 +102,17 @@ def sentinels():
     the two data folders, and the target of a junction inside one of them
     (a user who moved models to another drive with mklink /J)."""
     local, roaming = (Path(os.environ[v]) for v in ("LOCALAPPDATA", "APPDATA"))
-    outside = Path(os.environ.get("RUNNER_TEMP", local.parent)) / "tf-junction-target"
     return [local / "TranscriptionFlowKeep" / "keep.txt",
-            roaming / "TranscriptionFlow.bak" / "keep.txt", outside / "keep.txt"]
+            roaming / "TranscriptionFlow.bak" / "keep.txt", junction_target() / "keep.txt"]
 
 
 def junction() -> Path:
     return data_dirs()[0] / "models" / "linked"
+
+
+def junction_target() -> Path:
+    local = Path(os.environ["LOCALAPPDATA"])
+    return Path(os.environ.get("RUNNER_TEMP", local.parent)) / "tf-junction-target"
 
 
 def make_sentinels(check) -> None:
@@ -116,7 +121,7 @@ def make_sentinels(check) -> None:
         path.write_text("keep", "utf-8")
     link = junction()
     if not os.path.isjunction(link):  # a plain uninstall kept the first one
-        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(sentinels()[-1].parent)],
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(junction_target())],
                               capture_output=True, text=True, timeout=60)
         check(done.returncode == 0, "junction in the models folder for the uninstall check",
               done.stdout + done.stderr)
@@ -143,10 +148,14 @@ def reg_key_exists(key: str) -> bool:
         return False
 
 
+def silent_install(setup: Path, log_name: str = "install.log") -> int:
+    log = Path(os.environ.get("RUNNER_TEMP", setup.parent)) / log_name
+    return subprocess.run([str(setup), "/VERYSILENT", "/CURRENTUSER", "/SUPPRESSMSGBOXES",
+                           "/NORESTART", f"/LOG={log}"], timeout=TIMEOUT).returncode
+
+
 def check_install(check, setup: Path) -> None:
-    code = subprocess.run([str(setup), "/VERYSILENT", "/CURRENTUSER", "/SUPPRESSMSGBOXES",
-                           "/NORESTART", f"/LOG={Path(os.environ.get('RUNNER_TEMP', setup.parent)) / 'install.log'}"],
-                          timeout=TIMEOUT).returncode
+    code = silent_install(setup)
     check(code == 0, "silent install", f"exit {code}")
     app = install_dir()
     for rel in (EXE, "unins000.exe", "_internal", "LICENSE.txt", "THIRD-PARTY-NOTICES.txt",
@@ -161,6 +170,22 @@ def check_install(check, setup: Path) -> None:
         (folder / "models").mkdir(parents=True, exist_ok=True)
         (folder / "models" / "marker.txt").write_text("ci", "utf-8")
     make_sentinels(check)
+
+
+def check_upgrade(check, setup: Path) -> None:
+    """review-m4 F4: installing over an install keeps the Run value if it is
+    there and doesn't bring it back once the user turned autostart off."""
+    import winreg
+
+    want = reg_value(RUN_KEY, VALUE_NAME)
+    code = silent_install(setup, "upgrade-1.log")
+    check(code == 0 and reg_value(RUN_KEY, VALUE_NAME) == want,
+          "an upgrade keeps autostart on", f"exit {code}, {reg_value(RUN_KEY, VALUE_NAME)!r}")
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.DeleteValue(key, VALUE_NAME)  # what Settings' "Start with Windows" off does
+    code = silent_install(setup, "upgrade-2.log")
+    check(code == 0 and reg_value(RUN_KEY, VALUE_NAME) is None,
+          "an upgrade keeps autostart off", f"exit {code}, {reg_value(RUN_KEY, VALUE_NAME)!r}")
 
 
 def wait_until(done, seconds: float) -> bool:
@@ -193,10 +218,11 @@ def check_uninstall(check, delete_user_data: bool) -> None:
         else:
             check(folder.exists(), "a plain silent uninstall keeps settings and models",
                   str(folder))
-    for path in sentinels():
+    keep = sentinels()
+    for path in keep:
         check(path.is_file(), "the uninstall left this alone", str(path))
     if delete_user_data:
-        for path in sentinels():
+        for path in keep:
             shutil.rmtree(path.parent, ignore_errors=True)
 
 
@@ -263,6 +289,8 @@ def main(argv=None) -> int:
     f.add_argument("models_dir", type=Path)
     i = sub.add_parser("install")
     i.add_argument("setup", type=Path)
+    g = sub.add_parser("upgrade")
+    g.add_argument("setup", type=Path)
     u = sub.add_parser("uninstall")
     u.add_argument("--delete-user-data", action="store_true")
     d = sub.add_parser("defender")
@@ -275,6 +303,8 @@ def main(argv=None) -> int:
         check_frozen(check, args.onedir, args.wav.resolve(), args.models_dir.resolve())
     elif args.cmd == "install":
         check_install(check, args.setup.resolve())
+    elif args.cmd == "upgrade":
+        check_upgrade(check, args.setup.resolve())
     elif args.cmd == "uninstall":
         check_uninstall(check, args.delete_user_data)
     elif args.cmd == "defender":
