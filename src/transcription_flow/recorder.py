@@ -56,6 +56,10 @@ SILENT_MESSAGE = (
 # running between another thread's lookup and open.
 _PA_LOCK = threading.RLock()
 _open_streams = weakref.WeakKeyDictionary()  # the sounddevice module -> streams we have open
+_rescanned_at = weakref.WeakKeyDictionary()  # the sounddevice module -> time of its last restart
+# A press with the chosen mic missing doesn't restart PortAudio again within
+# this long of the last restart: an unplugged mic would slow every press.
+RESCAN_GAP = 30.0
 
 
 def _rescan(sd) -> None:
@@ -66,6 +70,7 @@ def _rescan(sd) -> None:
         if getattr(sd, "_initialized", 1):
             sd._terminate()
         sd._initialize()
+        _rescanned_at[sd] = time.monotonic()
     except Exception as exc:  # PortAudioError: keep the old list
         log.warning("could not refresh the device list: %s", type(exc).__name__)
 
@@ -117,17 +122,6 @@ def _index_of(sd, name):
     return next((index for index, found in _inputs(sd) if found == name), None)
 
 
-def find_input(sd, name):
-    """The device index for ``name``, or None (the Windows default). A
-    microphone that isn't plugged in falls back to the default."""
-    if not name:
-        return None
-    index = _index_of(sd, name)
-    if index is None:
-        log.warning("the chosen microphone is not connected; using the Windows default")
-    return index
-
-
 def input_rate(sd, device) -> int:
     """The device's default sample rate; NoMicrophoneError if it has no input."""
     try:
@@ -165,23 +159,26 @@ def open_named(sd, name, callback):
     """open_input for a microphone by name (None: the Windows default).
     It opens from PortAudio's current list, so a press stays quick; only
     when the name isn't on it or the open fails is the list read again
-    and the mic tried once more. Then the Windows default is used."""
+    (at most once per RESCAN_GAP) and the mic tried once more. Then the
+    Windows default is used."""
     with _PA_LOCK:
         if not name:
             return open_input(sd, None, callback)
-        failed = False
-        for fresh in (False, True):
+        last = _rescanned_at.get(sd)
+        recent = last is not None and time.monotonic() - last < RESCAN_GAP
+        found = False
+        for fresh in (False,) if recent else (False, True):
             if fresh:
                 _rescan(sd)
             index = _index_of(sd, name)
-            failed = index is not None
-            if failed:
+            found = index is not None
+            if found:
                 try:
                     return open_input(sd, index, callback)
                 except MicrophoneError:
                     pass
         log.warning("the chosen microphone %s; using the Windows default",
-                    "could not be opened" if failed else "is not connected")
+                    "could not be opened" if found else "is not connected")
         return open_input(sd, None, callback)
 
 
@@ -246,7 +243,8 @@ class Recorder:
 
     def check(self) -> None:
         """Raise NoMicrophoneError if there is no input device."""
-        input_rate(self.sd, find_input(self.sd, self.device))
+        index = _index_of(self.sd, self.device) if self.device else None
+        input_rate(self.sd, index)
 
     def open(self) -> None:
         if self._stream is not None:

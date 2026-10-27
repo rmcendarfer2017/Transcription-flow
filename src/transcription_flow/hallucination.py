@@ -97,6 +97,8 @@ def clean(text: str, speech) -> str:
         return text
     if seconds is None:
         log.info("transcript dropped: %s", reason)
-        return ""
-    log.info("transcript dropped: %s (%.2f s of speech)", reason, seconds)
-    raise ShortPhraseDropped()
+    else:
+        log.info("transcript dropped: %s (%.2f s of speech)", reason, seconds)
+    if reason == LITTLE_SPEECH:
+        raise ShortPhraseDropped()
+    return ""

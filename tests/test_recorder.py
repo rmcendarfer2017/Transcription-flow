@@ -254,6 +254,24 @@ def test_a_press_with_the_mic_on_the_list_does_not_restart_portaudio():
     assert sd.restarts == 0
 
 
+def test_an_unplugged_mic_restarts_portaudio_once_not_on_every_press(monkeypatch):
+    from transcription_flow import recorder as recorder_mod
+
+    sd = RescanningSoundDevice([mic("Laptop mic"), mic("USB mic")])
+    rec = Recorder(sd=sd, device="USB mic")
+    del sd.plugged[1]
+    for _ in range(3):
+        rec.start()
+        rec.stop()
+        assert sd.stream.device is None
+    assert sd.restarts == 1
+    monkeypatch.setattr(recorder_mod, "RESCAN_GAP", 0.0)  # a while later: look again
+    sd.plugged.append(mic("USB mic"))
+    rec.start()
+    rec.stop()
+    assert sd.restarts == 2 and sd.stream.device == 1
+
+
 def test_the_device_list_is_not_refreshed_while_a_stream_is_open():
     """A restart would break the warm stream or the open meter."""
     sd = RescanningSoundDevice([mic("Laptop mic")])
