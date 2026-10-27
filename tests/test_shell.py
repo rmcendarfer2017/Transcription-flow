@@ -183,6 +183,7 @@ def test_tray_menu_builds_with_the_real_pystray():
     pystray = pytest.importorskip("pystray")
     calls = []
     t = Tray(recording_actions(calls), pystray_module=pystray)
+    assert [i.checked for i in t._menu()] == [None, None, False, None, None, None, None]
     t.paused = True
     items = list(t._menu())
     for item in items:
@@ -192,8 +193,14 @@ def test_tray_menu_builds_with_the_real_pystray():
     assert [i.checked for i in items] == [None, None, True, None, None, None, None]
 
 
+def check_marks(menu):
+    return [i.checked(i) if i.checked else None for i in menu.items]
+
+
 def test_tray_status_change_updates_tooltip_menu_and_pause_check(tray):
     t, calls = tray
+    # Running: Pause is a check box, unticked; nothing else is checkable.
+    assert check_marks(t._icon.menu) == [None, None, False, None, None, None, None]
     t.set_status("Paused", paused=True)
     icon = t._icon
     assert icon.title == "Transcription Flow: Paused"

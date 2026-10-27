@@ -16,7 +16,6 @@ import transcription_flow
 from helpers import FakeMenu, FakeMenuItem, child_env
 from transcription_flow import bundlecheck
 from transcription_flow import main as app_main
-from transcription_flow.ui import tray
 
 SRC = Path(transcription_flow.__file__).resolve().parent
 
@@ -156,8 +155,21 @@ def test_the_tray_menu_check_builds_the_menu_with_pystrays_rules(monkeypatch):
     monkeypatch.setitem(sys.modules, "pystray",
                         SimpleNamespace(Menu=FakeMenu, MenuItem=FakeMenuItem))
     assert bundlecheck._tray_menu() == "7 items"
-    # The M4 crash: pystray refuses an action with a third (default) parameter.
-    monkeypatch.setattr(tray, "_action", lambda callback: lambda icon, item, cb=callback: cb())
+    # The stand-in that passed is strict: it refuses the M4 crash, an action
+    # with a third (default) parameter, as pystray does.
+    with pytest.raises(ValueError):
+        FakeMenuItem("Quit", lambda icon, item, cb=print: cb())
+
+
+def test_the_tray_menu_check_lets_a_menu_item_refusal_through(monkeypatch):
+    class RefusingMenuItem(FakeMenuItem):
+        def __init__(self, text, action, **kwargs):
+            if action is not None:
+                raise ValueError(action)
+            super().__init__(text, action, **kwargs)
+
+    monkeypatch.setitem(sys.modules, "pystray",
+                        SimpleNamespace(Menu=FakeMenu, MenuItem=RefusingMenuItem))
     with pytest.raises(ValueError):
         bundlecheck._tray_menu()
 
