@@ -727,6 +727,16 @@ def test_download_progress_updates_the_tray_every_few_percent(shell):
                                                            "Downloading base.en 10%"]
 
 
+def test_a_jump_past_a_multiple_of_five_still_updates_the_tray(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    job, before = a.job, len(p["tray"].statuses)
+    for percent in (3, 13, 17, 23):
+        a._progress(job, percent, 100)
+    assert [s for s, _ in p["tray"].statuses[before:]] == ["Downloading base.en 13%",
+                                                           "Downloading base.en 23%"]
+
+
 def test_a_mic_change_goes_to_the_controller(shell):
     a, p = shell
     save(a, p, mic="Headset mic")

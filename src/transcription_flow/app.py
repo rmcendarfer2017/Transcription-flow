@@ -54,6 +54,7 @@ class _Job:
         self.name, self.language = name, language
         self.downloading = downloading
         self.percent = 0
+        self.shown = 0  # the percent the tray last showed
         self.cancel = threading.Event()
 
     @property
@@ -349,7 +350,9 @@ class App:
 
     def _job_progress(self, job) -> None:
         if job is self._job:
-            if job.percent % TRAY_STEP == 0:  # each refresh rebuilds the tray menu
+            # Each refresh rebuilds the tray menu: only every TRAY_STEP percent.
+            if job.percent - job.shown >= TRAY_STEP or job.percent == 100:
+                job.shown = job.percent
                 self._refresh()
             self._tell_wizard()
 
