@@ -9,6 +9,7 @@ import types
 
 import pytest
 
+from helpers import wait_for
 from transcription_flow import config, models, paths
 from transcription_flow import main as app_main
 
@@ -34,6 +35,7 @@ def install(name):
 
 class Seen:
     engines, windows, wizards, trays, overlays = [], [], [], [], []
+    while_running = None  # called from FakeOverlay.run, while the app "runs"
     broken = {"broken"}  # model folders whose load fails
 
 
@@ -76,8 +78,9 @@ class FakeOverlay:
     def call(self, fn):
         fn()
 
-    def run(self):  # the user quits at once
-        pass
+    def run(self):  # the user quits at once, unless a test gave the copy something to do
+        if Seen.while_running is not None:
+            Seen.while_running()
 
     def quit(self):
         pass
@@ -110,6 +113,17 @@ class FakeWizard:
         pass
 
 
+class FakeSettings:
+    def __init__(self, parent, form, available, on_save, on_close, app=None):
+        Seen.windows.append(self)
+
+    def lift(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class FakeHotkey:
     def __init__(self, *callbacks):
         pass
@@ -126,6 +140,7 @@ def started(monkeypatch):
     for name in ("engines", "windows", "wizards", "trays", "overlays"):
         setattr(Seen, name, [])
     Seen.broken = {"broken"}
+    Seen.while_running = None
     monkeypatch.setattr(models, "load_manifest", fake_manifest)
     monkeypatch.setattr(models, "download", lambda *a, **k: pytest.fail("downloaded at start"))
     monkeypatch.setattr(socket.socket, "connect", lambda *a: pytest.fail("network at start"))
@@ -135,8 +150,9 @@ def started(monkeypatch):
     monkeypatch.setattr(recorder, "Recorder", FakeRecorder)
     monkeypatch.setattr(hotkey, "Hotkey", FakeHotkey)
     import transcription_flow.ui as ui_pkg
-    from transcription_flow.ui import tray, wizard
+    from transcription_flow.ui import settings, tray, wizard
 
+    monkeypatch.setattr(settings, "SettingsWindow", FakeSettings)
     monkeypatch.setattr(tray, "Tray", FakeTray)
     monkeypatch.setattr(wizard, "WizardWindow", FakeWizard)
     # overlay.py imports tkinter at the top, which a test box may not have.
@@ -221,3 +237,52 @@ def test_when_every_installed_model_fails_to_load_the_setup_window_opens_once(st
     assert [e.model_dir.name for e in Seen.engines] == ["small.en", "tiny.en"]
     assert len(Seen.wizards) == 1
     assert Seen.trays[0].statuses[-1] == "No speech model yet"
+
+
+def second_launch(*argv):
+    """Start another copy while the first runs; returns its exit code once
+    the first copy has had time to react."""
+    codes = []
+
+    def launch():
+        codes.append(app_main.main(list(argv)))
+        wait_for(lambda: Seen.windows or len(Seen.wizards) > 1, timeout=2)
+
+    Seen.while_running = launch
+    return codes
+
+
+def test_a_second_launch_opens_settings_in_the_running_copy_and_exits_0(started, capsys):
+    """review-m3 deviation 3: under pythonw a second copy used to exit with
+    nothing on screen."""
+    install("small.en")
+    codes = second_launch()
+    assert started() == app_main.EXIT_OK
+    assert codes == [app_main.EXIT_OK]
+    assert len(Seen.windows) == 1 and Seen.wizards == []
+    assert "already running; its window is open" in capsys.readouterr().err
+
+
+def test_a_second_launch_with_no_model_brings_up_the_setup_window(started):
+    codes = second_launch()
+    started()
+    assert codes == [app_main.EXIT_OK]
+    assert len(Seen.wizards) == 1 and Seen.windows == []  # the open one, lifted
+
+
+@pytest.mark.parametrize("argv", [("--tray",), ("--reset-config",),
+                                  ("--download-model", "--model", "tiny.en")])
+def test_a_sign_in_start_or_a_one_off_command_opens_nothing(started, argv):
+    install("small.en")
+    codes = second_launch(*argv)
+    started()
+    assert codes == [app_main.EXIT_ALREADY_RUNNING]
+    assert Seen.windows == []
+
+
+def test_after_quit_the_listener_is_gone(started):
+    install("small.en")
+    started()
+    from transcription_flow import single_instance
+
+    assert single_instance.request_show(paths.data_dir()) is False

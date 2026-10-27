@@ -1,0 +1,20 @@
+Transcription Flow: third-party notices
+=======================================
+
+Transcription Flow is licensed under the Apache License 2.0 (LICENSE.txt).
+This folder also contains the open-source components listed below; each
+one's licence text is in licenses/<name>/.
+
+pynput and pystray are licensed under the GNU Lesser General Public
+License v3 (licenses/LGPL-3.0.txt, which refers to licenses/GPL-3.0.txt).
+They are used unmodified and ship as loose Python files in
+_internal/pynput/ and _internal/pystray/, so you can replace them with
+modified versions. Their source code is on PyPI
+(https://pypi.org/project/pynput/, https://pypi.org/project/pystray/).
+
+The Whisper speech models are not part of this folder: the app downloads
+them on first use (MIT; see the model card on Hugging Face).
+
+Source code of Transcription Flow: https://github.com/rmcendarfer2017/Transcription-flow
+
+Components (name, version, licence):

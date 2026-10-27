@@ -181,6 +181,11 @@ src/transcription_flow/
   ui/display.py      DPI awareness and the screen's work area
 dictation.py         runs the app from a source checkout
 tests/               pytest suite (no microphone, hotkey or network needed)
+packaging/
+  transcription_flow.spec  PyInstaller (onedir, windowed, no UPX)
+  installer.iss      Inno Setup, per-user
+  buildinfo.py       version, icon, licences, onedir check, portable zip
+  ci_smoke.py        the build, install and uninstall checks CI runs
 ```
 
 `requirements-lock.txt` pins every dependency with hashes;
@@ -207,13 +212,48 @@ venv\Scripts\python -m pytest
 ```
 
 Tests that need Windows (the real clipboard, registry and Tk windows) skip
-elsewhere and run in the windows-latest CI job. The two https-redirect
+elsewhere and run in the windows-latest CI job. CI runs
+`tests\test_windows_ui.py` in a pytest process of its own (see the note
+at its top); do the same if a Tk test fails with "Can't find a usable
+init.tcl". The two https-redirect
 tests skip when `openssl` is not on PATH (it makes their test certificate).
 
 The test clip was made with the Kokoro text-to-speech model (Apache-2.0).
 
+### Building the Windows app
+
+The `windows-build` CI job builds it on GitHub's `windows-latest`; to build
+it yourself on Windows (Inno Setup 6 installed):
+
+```
+venv\Scripts\pip install --require-hashes --no-deps -r requirements-build-lock.txt
+venv\Scripts\python -m PyInstaller --noconfirm --clean packaging\transcription_flow.spec
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DSourceDir=%CD%\dist\TranscriptionFlow /DOutputDir=%CD%\dist\out packaging\installer.iss
+```
+
+`dist\TranscriptionFlow\` is the app folder (the portable zip is that
+folder plus `Uninstall portable.txt`); `dist\out\` holds the installer.
+`packaging\ci_smoke.py` has the checks CI runs on both. The installer is
+per-user (no admin prompt) and unsigned for now.
+
 ## Third-party licences
 
-pynput (hotkey and typing) and pystray (tray icon) are LGPL-3.0; they are
-used as unmodified, separate modules. faster-whisper, ctranslate2 and the
-Whisper models are MIT.
+The app folder and the installer include these open-source parts; each
+one's licence text is in the `licenses` folder next to
+`TranscriptionFlow.exe`, listed in `THIRD-PARTY-NOTICES.txt`.
+
+- **pynput** (hotkey and typing) and **pystray** (tray icon): LGPL-3.0.
+  They are used unmodified and ship as loose `.py` files in
+  `_internal\pynput` and `_internal\pystray`, not inside the compiled
+  archive, so you can replace them with modified versions. The LGPL-3.0
+  text and the GPL-3.0 text it builds on are in `licenses`.
+- **faster-whisper**, **CTranslate2**, **ONNX Runtime** (voice detection),
+  **PortAudio** (via sounddevice), **six**: MIT. **Pillow**: MIT-CMU.
+  **NumPy**, **tokenizers**, **huggingface_hub** and the smaller helpers:
+  BSD, MIT or Apache-2.0, as listed.
+- **Python** and **Tcl/Tk**: the PSF licence (`licenses\python`).
+  **PyInstaller**'s bootloader: GPL-2.0 with its exception for bundled apps.
+- **PyAV is not bundled.** faster-whisper imports it only to decode audio
+  files, and the app hands it audio as numbers; PyAV's Windows build
+  includes GPL codecs (x264/x265), so the app folder leaves it out.
+- The **Whisper models** (MIT) are downloaded on first use, not bundled.

@@ -132,6 +132,16 @@ def test_a_cancel_stops_before_the_next_block_is_written(service):
         service.download("tiny.en", lambda d, t: None, cancel)
 
 
+def test_a_download_cancelled_before_it_gets_the_lock_never_starts(service):
+    """review-m3 X6: a job cancelled while it waited for the per-model lock
+    must not open a connection when it gets the lock."""
+    cancel = threading.Event()
+    cancel.set()
+    service._download = lambda *a, **k: pytest.fail("downloaded after the cancel")
+    with pytest.raises(Cancelled):
+        service.download("tiny.en", lambda d, t: None, cancel)
+
+
 def test_a_restart_waits_for_the_cancelled_download_of_the_same_model(service):
     """review-m3 F2: Cancel then Download again at once. The old download
     may still be inside a read; the new one must not start until it stops."""

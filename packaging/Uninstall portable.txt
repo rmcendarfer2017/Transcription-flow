@@ -1,0 +1,11 @@
+Transcription Flow (portable): how to remove it
+================================================
+
+1. Quit Transcription Flow: right-click its tray icon, Quit.
+2. If you turned on "Start with Windows" in Settings, turn it off there
+   first (or it stays in Task Manager > Startup apps).
+3. Delete this TranscriptionFlow folder.
+4. To remove your settings and downloaded speech models too, delete:
+     %LOCALAPPDATA%\TranscriptionFlow   (models and logs)
+     %APPDATA%\TranscriptionFlow        (settings)
+   Paste each line into the File Explorer address bar to open it.

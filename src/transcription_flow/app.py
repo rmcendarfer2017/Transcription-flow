@@ -224,6 +224,14 @@ class App:
         if self._log_dir is not None:
             self._opener(self._log_dir)
 
+    def show_window(self) -> None:
+        """Another launch of the app: the setup window if it is open (or no
+        model is installed yet), else Settings."""
+        if self._wizard is not None:
+            self._wizard.lift()
+            return
+        self.open_settings()
+
     def open_settings(self) -> None:
         """With no model yet, Settings is the setup window (it can download one)."""
         if self._model is None:

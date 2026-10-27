@@ -58,5 +58,78 @@ jobs:
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
         run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
-      - name: Unit tests
-        run: python -m pytest -ra -m "not slow"
+      # The Tk window tests get their own process: on windows-latest, Tk()
+      # after the ~500 other tests intermittently failed with "Can't find a
+      # usable init.tcl ... No error" (M3, PR #3). See tests/test_windows_ui.py.
+      - name: Unit tests (all but the Tk windows)
+        run: python -m pytest -ra -m "not slow" --ignore=tests/test_windows_ui.py
+      - name: Tk window tests, in their own process
+        run: python -m pytest -ra tests/test_windows_ui.py
+
+  windows-build:
+    name: Windows build, install and uninstall (artifacts only, no release)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build-lock.txt
+      - name: Install pinned build dependencies (app + PyInstaller)
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build-lock.txt"
+      - name: Cache tiny.en
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-models/tiny.en
+          key: whisper-tiny.en-${{ hashFiles('src/transcription_flow/models_manifest.json') }}
+      - name: Download tiny.en with our downloader (checksums re-verified on a cache hit too)
+        run: python -m transcription_flow --verify --model tiny.en --models-dir .ci-models
+        env:
+          PYTHONPATH: src
+      - name: Build the onedir with PyInstaller
+        run: python -m PyInstaller --noconfirm --clean packaging/transcription_flow.spec
+      - name: Smoke-test the build (selftest on tiny.en, GPU probe, LGPL modules loose, licences)
+        run: python packaging/ci_smoke.py frozen dist/TranscriptionFlow tests/fixtures/hello.wav .ci-models
+      - name: Build the installer with Inno Setup
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner ($iscc)" }
+          $ver = python packaging/buildinfo.py version
+          $num = python packaging/buildinfo.py numeric-version
+          & $iscc "/DAppVersion=$ver" "/DAppNumVersion=$num" "/DSourceDir=$PWD\dist\TranscriptionFlow" `
+            "/DOutputDir=$PWD\dist\out" "/DIconFile=$PWD\build\transcription_flow\TranscriptionFlow.ico" `
+            packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          "TF_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Portable zip
+        run: python packaging/buildinfo.py portable-zip dist/TranscriptionFlow "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
+      - name: Silent install, then check the files, Start menu shortcut and Run value
+        run: python packaging/ci_smoke.py install "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+      - name: The installed copy passes the same smoke test
+        run: python packaging/ci_smoke.py frozen "$env:LOCALAPPDATA\Programs\Transcription Flow" tests/fixtures/hello.wav .ci-models
+      - name: Silent uninstall removes the app and keeps settings and models
+        run: python packaging/ci_smoke.py uninstall
+      - name: Reinstall, then a silent uninstall with /DELETEUSERDATA removes the data too
+        run: |
+          python packaging/ci_smoke.py install "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/ci_smoke.py uninstall --delete-user-data
+      - name: Defender scan of the build, if the runner has Defender
+        run: python packaging/ci_smoke.py defender dist
+      - name: Sizes in the job summary
+        if: ${{ !cancelled() }}
+        run: python packaging/ci_smoke.py sizes dist/TranscriptionFlow "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe" "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
+      - name: Upload the installer and portable zip
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: transcription-flow-windows-${{ github.sha }}
+          path: |
+            dist/out/TranscriptionFlow-Setup-*.exe
+            dist/out/TranscriptionFlow-*-portable.zip
+          if-no-files-found: error
+          retention-days: 14

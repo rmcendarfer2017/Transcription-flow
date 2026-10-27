@@ -925,3 +925,23 @@ def test_quit_stops_hotkey_tray_settings_and_the_ui(shell):
     a.quit()
     assert a.quitting and p["hk"].calls[-1] == "stop" and p["tray"].stopped
     assert p["stopped"] == [True] and a._settings is None
+
+
+def test_a_second_launch_opens_settings_or_lifts_the_open_window(shell):
+    a, p = shell
+    a.show_window()
+    a.show_window()
+    assert len(p["windows"]) == 1 and p["windows"][0].lifted == 1 and p["wizards"] == []
+
+
+def test_a_second_launch_lifts_an_open_setup_window_even_with_a_model(shell):
+    a, p = shell
+    a.open_wizard()
+    a.show_window()
+    assert p["wizards"][0].lifted == 1 and p["windows"] == []
+
+
+def test_a_second_launch_with_no_model_opens_the_setup_window(first_run):
+    a, p = first_run
+    a.show_window()
+    assert len(p["wizards"]) == 1 and p["windows"] == []
