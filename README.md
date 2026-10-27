@@ -50,6 +50,10 @@ transcription is typed at the current cursor position.
   prompt or the lock screen), the recording is cancelled after about 1.5 s
   (longer if Filter Keys sets a slow key repeat), never
   typed into whatever has focus then, and a notification says so.
+- With Filter Keys set to no key repeat, a missed release of Caps Lock,
+  Scroll Lock or an F key can't be noticed. Then a recording that reaches
+  the 5-minute limit is dropped, not typed, and a one-time notification
+  says so. Right Ctrl doesn't have this limit.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
 - The microphone is opened only while you hold the hotkey, so Windows doesn't
