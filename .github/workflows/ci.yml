@@ -28,7 +28,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
-        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
       - name: Cache tiny.en
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -57,6 +57,6 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
-        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
       - name: Unit tests
         run: python -m pytest -ra -m "not slow"
