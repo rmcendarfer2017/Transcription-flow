@@ -162,7 +162,7 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         return EXIT_SETUP
 
     keep_warm = args.keep_mic_warm or settings.keep_mic_warm
-    recorder = Recorder(keep_warm=keep_warm)
+    recorder = Recorder(device=settings.mic or None, keep_warm=keep_warm)
     startup_errors = []
     try:
         recorder.check()

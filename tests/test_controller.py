@@ -15,6 +15,8 @@ class FakeRecorder:
         self.start_error = None
         self.stop_error = None
         self.calls = []
+        self.device = None
+        self.is_open = False
 
     def start(self):
         self.calls.append("start")
@@ -416,3 +418,28 @@ def test_keep_warm_open_failure_is_reported(parts):
     rec.start_error = NoMicrophoneError("no mic")
     ctl.set_keep_warm(True)
     assert errors == ["no mic"] and ctl.state is State.IDLE
+
+
+def test_a_new_mic_reopens_a_warm_stream_on_it(parts):
+    ctl, rec, *_ = parts
+    rec.is_open = True
+    ctl.set_microphone("Headset mic")
+    assert rec.device == "Headset mic" and rec.calls == ["close", "open"]
+
+
+def test_a_new_mic_while_recording_or_cold_waits_for_the_next_open(parts):
+    ctl, rec, *_ = parts
+    ctl.set_microphone("Headset mic")
+    assert rec.device == "Headset mic" and rec.calls == []  # cold: opens on the next press
+    rec.is_open = True
+    ctl.press()
+    ctl.set_microphone(None)
+    assert rec.device is None and rec.calls == ["start"]  # not swapped mid-clip
+
+
+def test_a_new_mic_that_fails_to_open_is_reported(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    rec.is_open = True
+    rec.start_error = NoMicrophoneError("no mic")
+    ctl.set_microphone("Headset mic")
+    assert errors == ["no mic"]

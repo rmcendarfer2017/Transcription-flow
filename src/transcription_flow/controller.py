@@ -143,6 +143,18 @@ class Controller:
             else:
                 self._recorder.close()
 
+    def set_microphone(self, device) -> None:
+        """Use another microphone (a name, or None for the default) from the
+        next recording; a warm stream reopens on it now."""
+        with self._lock:
+            self._recorder.device = device
+            if self._state is State.IDLE and self._recorder.is_open:
+                self._recorder.close()
+                try:
+                    self._recorder.open()
+                except MicrophoneError as err:
+                    self._error(err)
+
     def _cap_hit(self, rid: int, unchecked: bool) -> None:
         # Timer.cancel() can't stop a callback already waiting for the lock,
         # so a stale cap must not end a newer recording.

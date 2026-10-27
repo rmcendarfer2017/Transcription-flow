@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -29,6 +30,7 @@ class PortAudioError(Exception):
 class FakeStream:
     def __init__(self, sd, samplerate, channels, dtype, device, callback):
         self.sd = sd
+        self.device = device
         self.samplerate = samplerate
         self.channels = channels
         self.callback = callback
@@ -54,15 +56,20 @@ class FakeStream:
 class FakeSoundDevice:
     """Stand-in for the sounddevice module."""
 
-    def __init__(self, device_info=None, accepted_rates=None, default_rate=16000):
+    def __init__(self, device_info=None, accepted_rates=None, default_rate=16000, devices=(),
+                 hostapi=0):
         self.device_info = device_info if device_info is not None else {
             "name": "Fake mic", "max_input_channels": 1, "default_samplerate": default_rate}
         self.accepted_rates = accepted_rates
         self.streams = []
+        self.devices = [dict(d, index=i) for i, d in enumerate(devices)]  # query_devices()
+        self.default = SimpleNamespace(hostapi=hostapi)
 
     def query_devices(self, device=None, kind=None):
         if self.device_info is False:
             raise PortAudioError("Error querying device -1")
+        if device is None and kind is None:
+            return self.devices
         return self.device_info
 
     def InputStream(self, samplerate, channels, dtype, device, callback):  # noqa: N802
