@@ -80,27 +80,27 @@ class SettingsWindow:
         frame.columnconfigure(1, weight=1)
 
         self.hotkey = self._combo(frame, 0, "Hold to dictate", self._hotkeys, form.hotkey)
-        self.model = self._combo(frame, 2, "Speech model", self._models, form.model)
+        self.model = self._combo(frame, 1, "Speech model", self._models, form.model)
         self.model.bind("<<ComboboxSelected>>", lambda e: self._update_languages())
         self._languages = languages_for(form.model)
-        self.language = self._combo(frame, 3, "Language", self._languages, form.language)
-        self.output = self._combo(frame, 4, "Output", self._outputs, form.output)
+        self.language = self._combo(frame, 2, "Language", self._languages, form.language)
+        self.output = self._combo(frame, 3, "Output", self._outputs, form.output)
 
         self.keep_warm = tk.BooleanVar(value=form.keep_mic_warm)
         ttk.Checkbutton(frame, text="Keep the microphone open between dictations "
                         "(catches the first word; the mic-in-use icon stays on)",
-                        variable=self.keep_warm).grid(row=5, column=0, columnspan=2,
+                        variable=self.keep_warm).grid(row=4, column=0, columnspan=2,
                                                       sticky="w", pady=(8, 0))
         self.autostart = tk.BooleanVar(value=form.start_with_windows)
         check = ttk.Checkbutton(frame, text="Start with Windows", variable=self.autostart)
-        check.grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        check.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         if not autostart_available:
             check.state(["disabled"])
         ttk.Label(frame, text=RESTART_NOTE, wraplength=360).grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=(16, 0))
         ttk.Button(buttons, text="Cancel", command=self.close).grid(row=0, column=0, padx=4)
         ttk.Button(buttons, text="Save", command=self.save, default="active").grid(row=0,
                                                                                     column=1)
