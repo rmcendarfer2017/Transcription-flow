@@ -15,7 +15,7 @@ from transcription_flow.hotkey import HotkeyTracker
 @pytest.fixture
 def events():
     log = []
-    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+    tracker = HotkeyTracker(lambda unchecked: log.append("press"), lambda: log.append("release"),
                             lambda reason: log.append("other"))
     return tracker, log
 

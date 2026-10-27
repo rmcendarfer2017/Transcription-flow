@@ -23,7 +23,7 @@ class Clock:
 @pytest.fixture
 def tracked():
     log, clock = [], Clock()
-    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+    tracker = HotkeyTracker(lambda unchecked: log.append("press"), lambda: log.append("release"),
                             lambda reason: log.append(f"cancel: {reason}"), clock=clock,
                             repeat_gap=lambda: 1.5)
     return tracker, log, clock
@@ -92,7 +92,7 @@ def test_after_a_missed_release_the_late_key_up_does_nothing_and_a_new_press_wor
 
 def test_the_gap_is_read_at_each_press():
     log, clock, gaps = [], Clock(), [3.0, 1.5]
-    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+    tracker = HotkeyTracker(lambda unchecked: log.append("press"), lambda: log.append("release"),
                             lambda reason: log.append(f"cancel: {reason}"), clock=clock,
                             repeat_gap=lambda: gaps.pop(0))
     tracker.key_down(True)
@@ -107,7 +107,7 @@ def test_the_gap_is_read_at_each_press():
 
 def no_repeat_tracker(still_down):
     log, clock = [], Clock()
-    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+    tracker = HotkeyTracker(lambda unchecked: log.append("press"), lambda: log.append("release"),
                             lambda reason: log.append(f"cancel: {reason}"), clock=clock,
                             repeat_gap=lambda: None, still_down=still_down)
     tracker.key_down(True)
@@ -126,6 +126,27 @@ def test_without_repeat_a_key_seen_up_is_a_missed_release():
 
 def test_without_repeat_and_no_key_state_nothing_is_cancelled():
     assert no_repeat_tracker(lambda: None) == ["press"]
+
+
+def press_flags(gap, still_down):
+    flags, asked = [], []
+
+    def down():
+        asked.append(True)
+        return still_down
+
+    tracker = HotkeyTracker(flags.append, lambda: None, lambda reason: None,
+                            repeat_gap=lambda: gap, still_down=down)
+    tracker.key_down(True)
+    tracker.key_down(True)  # a repeat (or a stray down) is not a second press
+    return flags, asked
+
+
+def test_a_press_is_unchecked_only_with_no_repeat_and_no_key_state():
+    """review-m2 R3: then the controller drops the recording at the cap."""
+    assert press_flags(None, None) == ([True], [True])
+    assert press_flags(None, True) == ([False], [True])  # Right Ctrl: the key state works
+    assert press_flags(1.5, None) == ([False], [])  # repeats work: key state never asked
 
 
 def test_check_when_not_held_does_nothing(tracked):
@@ -190,7 +211,8 @@ def running():
             events.set()
         return f
 
-    key = Hotkey(note("press"), note("release"), note("cancel"), hook=hook, poll=0.01,
+    press = note("press")
+    key = Hotkey(lambda unchecked: press(), note("release"), note("cancel"), hook=hook, poll=0.01,
                  repeat=FakeRepeat(0.2))
     key.start("right_ctrl")
     yield key, hook, log
@@ -200,7 +222,7 @@ def running():
 def test_hook_events_reach_the_callbacks_on_the_dispatcher_thread(running):
     key, hook, log = running
     seen = []
-    key._tracker._on_press = lambda: seen.append(threading.current_thread().name)
+    key._tracker._on_press = lambda unchecked: seen.append(threading.current_thread().name)
     put = hook.handles[-1].put
     put((DOWN, True))
     put((DOWN, False))
@@ -219,7 +241,7 @@ def test_dispatcher_cancels_a_hold_with_no_repeats(running):
 
 def test_dispatcher_without_repeat_asks_the_key_state_of_right_ctrl():
     log, hook, repeat = [], FakeHook(), FakeRepeat(gap=None, down=False)
-    key = Hotkey(lambda: log.append("press"), lambda: None, log.append, hook=hook, poll=0.01,
+    key = Hotkey(lambda unchecked: log.append("press"), lambda: None, log.append, hook=hook, poll=0.01,
                  repeat=repeat)
     key.start("right_ctrl")
     try:
@@ -233,11 +255,23 @@ def test_dispatcher_without_repeat_asks_the_key_state_of_right_ctrl():
 def test_a_suppressed_key_never_asks_the_key_state():
     """A key our hook swallows never reaches GetAsyncKeyState: it would read up."""
     hook, repeat = FakeHook(), FakeRepeat(gap=None, down=False)
-    key = Hotkey(lambda: None, lambda: None, lambda r: None, hook=hook, repeat=repeat)
+    key = Hotkey(lambda unchecked: None, lambda: None, lambda r: None, hook=hook, repeat=repeat)
     key.set_key("caps_lock")
     assert key._still_down() is None and repeat.asked == []
     key.set_key("right_ctrl")
     assert key._still_down() is False and repeat.asked == [0xA3]
+
+
+def test_a_suppressed_key_without_repeat_is_reported_unchecked():
+    hook, repeat, flags = FakeHook(), FakeRepeat(gap=None, down=False), []
+    key = Hotkey(flags.append, lambda: None, lambda r: None, hook=hook, poll=0.01,
+                 repeat=repeat)
+    key.start("f9")
+    try:
+        hook.handles[-1].put((DOWN, True))
+        assert wait_for(lambda: flags == [True])
+    finally:
+        key.stop()
 
 
 def test_set_paused_reaches_the_hook(running):
@@ -443,6 +477,14 @@ def test_filter_keys_with_a_long_repeat_delay_widens_the_gap():
 
 def test_filter_keys_with_repeat_off_gives_no_gap():
     fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iWaitMSec": 500, "iDelayMSec": 0, "iRepeatMSec": 0}
+    assert gap(filter_keys=fk) is None
+
+
+@pytest.mark.parametrize("delay, period", [(1000, 0), (0, 1000)])
+def test_filter_keys_with_only_one_repeat_value_at_zero_gives_no_gap(delay, period):
+    """review-m2 R4: either value at 0 is read as repeat off. The safe side:
+    no gap never cancels a hold, while a made-up gap could cancel a real one."""
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iDelayMSec": delay, "iRepeatMSec": period}
     assert gap(filter_keys=fk) is None
 
 

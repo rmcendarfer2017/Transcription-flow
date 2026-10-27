@@ -23,7 +23,10 @@ Windows' standard keyboard settings always fit the floor (the slowest is a
 delay can be up to 20 s or off, can widen it. GetAsyncKeyState
 can't do this job for a suppressed key (it never reaches the async key
 state); it is the fallback only when keys don't repeat at all and the hotkey
-is a modifier we let through.
+is a modifier we let through. With no repeat and a suppressed key, a missed
+key-up can't be seen at all: the press is reported as ``unchecked``, and the
+controller then drops such a recording at its time cap instead of typing it
+(review-m2 R3).
 """
 
 import ctypes
@@ -133,7 +136,8 @@ class WindowsKeyRepeat:
 class HotkeyTracker:
     """``repeat_gap()`` is read at each press (seconds, or None when keys
     don't repeat); ``still_down()`` answers True, False or None (unknown)
-    and is asked only when there is no gap."""
+    and is asked only when there is no gap. ``on_press(unchecked)`` gets
+    True when neither can catch a missed release."""
 
     def __init__(self, on_press, on_release, on_cancel, clock=time.monotonic,
                  repeat_gap=lambda: MIN_REPEAT_GAP, still_down=lambda: None):
@@ -153,9 +157,12 @@ class HotkeyTracker:
             if not self.held:  # auto-repeat keeps coming while held
                 self.held = True
                 self._gap = self._repeat_gap()
+                unchecked = False
                 if self._gap is None:
-                    log.info("keys don't auto-repeat here (Filter Keys)")
-                self._on_press()
+                    unchecked = self._still_down() is None
+                    log.info("keys don't auto-repeat here (Filter Keys)%s",
+                             "; a missed release can't be detected" if unchecked else "")
+                self._on_press(unchecked)
         elif self.held:
             self._on_cancel("another key was pressed")
 

@@ -19,6 +19,9 @@ log = logging.getLogger(__name__)
 
 MISSED_RELEASE_TOAST = ("Recording cancelled: the key release was missed, so nothing was "
                         "typed. Hold the key again to dictate.")
+UNCHECKED_NOTICE = ("Filter Keys has key repeat off, so the app can't tell if a release of "
+                    "{key} is missed (at the lock screen, say). Recordings that reach 5 minutes "
+                    "are dropped, not typed. Right Ctrl doesn't have this limit.")
 
 
 def open_folder(path) -> None:
@@ -48,6 +51,7 @@ class App:
         self._device = device
         self._settings = None
         self._error = None
+        self._unchecked_noticed = False
         self.quitting = False
 
     # -- status ----------------------------------------------------------
@@ -91,6 +95,15 @@ class App:
     def _clear_error(self) -> None:
         self._error = None
         self._refresh()
+
+    def press(self, unchecked: bool) -> None:
+        """Hotkey thread: start a recording. The first hold whose release
+        can't be checked gets a one-time notice (review-m2 R3)."""
+        if unchecked and not self._unchecked_noticed:
+            self._unchecked_noticed = True
+            self._ui_call(lambda: self._tray.notify(
+                UNCHECKED_NOTICE.format(key=self.hotkey_label())))
+        self._controller.press(unchecked)
 
     def cancel_recording(self, reason: str) -> None:
         """Hotkey thread: drop the recording. A missed key release is never

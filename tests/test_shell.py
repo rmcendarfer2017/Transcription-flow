@@ -251,6 +251,9 @@ class FakeController:
         self.calls = []
         self.recording = True
 
+    def press(self, unchecked=False):
+        self.calls.append(("press", unchecked))
+
     def cancel(self, reason):
         self.calls.append(("cancel", reason))
         was, self.recording = self.recording, False
@@ -405,6 +408,20 @@ def test_a_missed_key_release_cancels_with_a_toast(shell):
     assert p["ctl"].calls == [("cancel", MISSED_RELEASE)]
     assert len(p["ui"]) == 1  # the toast went through the Tk thread
     assert p["tray"].notes == [app_mod.MISSED_RELEASE_TOAST]
+
+
+def test_an_unchecked_hold_gets_a_one_time_notice(shell):
+    """review-m2 R3: Filter Keys repeat off plus a suppressed key."""
+    a, p = shell
+    a.config = dataclasses.replace(a.config, hotkey="f9")
+    a.press(False)
+    assert p["tray"].notes == [] and p["ui"] == []
+    a.press(True)
+    a.press(True)
+    assert p["ctl"].calls == [("press", False), ("press", True), ("press", True)]
+    assert len(p["ui"]) == 1  # through the Tk thread, once
+    assert p["tray"].notes == [app_mod.UNCHECKED_NOTICE.format(key="F9")]
+    assert "F9" in p["tray"].notes[0]
 
 
 def test_a_missed_release_with_nothing_recording_is_silent(shell):

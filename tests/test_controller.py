@@ -3,6 +3,7 @@ import threading
 import pytest
 
 from helpers import flush_logs, tone, wait_for
+from transcription_flow import controller as controller_mod
 from transcription_flow.controller import Controller, State
 from transcription_flow.recorder import NoMicrophoneError, SilentMicrophoneError
 
@@ -186,6 +187,28 @@ def test_cap_timer_stops_and_transcribes(parts, timers):
     assert out.typed == ["hello"]
     ctl.release()  # the key comes up later: nothing more happens
     assert rec.calls == ["start", "stop"]
+
+
+def test_an_unchecked_hold_is_dropped_at_the_cap_not_typed(parts, timers):
+    """review-m2 R3: with no way to see a missed release (Filter Keys repeat
+    off, a suppressed key), 5 minutes of audio must not be typed into
+    whatever has focus after the lock screen."""
+    ctl, rec, eng, out, ui, errors = parts
+    ctl.press(unchecked=True)
+    timers.timers[-1].fire()
+    assert ctl.state is State.IDLE and rec.calls == ["start", "cancel"]
+    assert ui == ["recording", "hidden"] and errors == [controller_mod.CAP_DROPPED]
+    ctl.release()  # the late key-up does nothing
+    ctl.press()  # a checked hold after it types at the cap as before
+    timers.timers[-1].fire()
+    assert idle(ctl) and out.typed == ["hello"] and eng.calls == 1
+
+
+def test_an_unchecked_hold_released_in_time_is_typed(parts, timers):
+    ctl, rec, eng, out, ui, errors = parts
+    ctl.press(unchecked=True)
+    ctl.release()
+    assert idle(ctl) and out.typed == ["hello"] and errors == []
 
 
 def test_release_cancels_the_cap_timer(parts, timers):

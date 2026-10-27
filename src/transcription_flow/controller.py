@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 
 MIN_SECONDS = 0.3
 MAX_SECONDS = 300.0
+CAP_DROPPED = ("Recording dropped at the 5-minute limit, not typed: with Filter Keys repeat "
+               "off, the app can't tell if the key was let go.")
 
 
 class State(enum.Enum):
@@ -51,6 +53,7 @@ class Controller:
         self._paused = False
         self._cap_timer = None
         self._recording_id = 0  # the cap timer's token (review F8)
+        self._unchecked = False  # the cap drops this recording (review-m2 R3)
         self._jobs = queue.Queue()
         self._worker = None
 
@@ -74,7 +77,11 @@ class Controller:
         self._recorder.close()
 
     # -- hotkey events ---------------------------------------------------
-    def press(self) -> None:
+    def press(self, unchecked: bool = False) -> None:
+        """``unchecked``: a missed key release can't be detected for this
+        hold, so reaching the cap means the release was probably missed
+        (the lock screen, an elevated window) and the recording is dropped,
+        never typed into whatever has focus now."""
         with self._lock:
             if self._state is State.TRANSCRIBING:
                 log.info("press ignored: still transcribing")
@@ -87,6 +94,7 @@ class Controller:
                 return
             self._recording_id += 1
             rid = self._recording_id
+            self._unchecked = unchecked
             self._cap_timer = self._timer(self._max_seconds, lambda: self._cap_hit(rid))
             self._set(State.RECORDING)
 
@@ -141,7 +149,12 @@ class Controller:
         with self._lock:
             if self._state is State.RECORDING and rid == self._recording_id:
                 log.info("recording reached the %.0f s cap", self._max_seconds)
-                self._finish("cap")
+                if self._unchecked:
+                    self._cancel()
+                    log.info("recording dropped: its key release could not be checked")
+                    self._on_error(CAP_DROPPED)
+                else:
+                    self._finish("cap")
 
     # -- internals (lock held) -------------------------------------------
     def _set(self, state: State) -> None:

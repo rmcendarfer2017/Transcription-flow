@@ -202,7 +202,8 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
                             on_error=report)
     controller.start()
     app = App(settings, paths.config_file(), controller,
-              Hotkey(controller.press, controller.release, lambda r: app.cancel_recording(r)),
+              Hotkey(lambda unchecked: app.press(unchecked), controller.release,
+                     lambda r: app.cancel_recording(r)),
               Tray, autostart.RunKey(), ui_call=overlay.call, stop_ui=overlay.quit,
               settings_factory=lambda *a: SettingsWindow(overlay.root, *a),
               output_factory=output_factory,
