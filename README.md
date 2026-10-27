@@ -317,7 +317,9 @@ per-user (no admin prompt) and unsigned for now.
    (`## [0.1.0] - YYYY-MM-DD`) and merge that to `main`.
 2. Wait until CI on `main` has passed for that commit. The release stops
    if CI is missing, still running or failed for the tagged commit; after
-   CI finishes, re-run the failed release jobs from the Actions tab.
+   CI finishes, re-run the failed release jobs from the Actions tab. If a
+   later push to `main` cancelled CI on that commit, re-run that CI run
+   first, or tag the newer commit instead.
 3. Tag the merged commit on `main` and push the tag:
    `git tag v0.1.0 && git push origin v0.1.0`.
 4. [`release.yml`](.github/workflows/release.yml) checks that the tag is

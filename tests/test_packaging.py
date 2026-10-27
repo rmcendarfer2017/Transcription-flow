@@ -628,6 +628,13 @@ def test_release_runs_only_on_a_v_tag_push():
             assert "tags" not in str(flow[True]), name
 
 
+READ_ONLY_GH_API = {"release.yml": [
+    'gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"'
+    " > check-runs.json",
+    'gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)',
+]}
+
+
 def test_release_only_drafts():
     """Publishing stays a person's step: the workflow creates a draft and
     nothing in any workflow publishes or edits a release."""
@@ -635,9 +642,10 @@ def test_release_only_drafts():
         runs = "\n".join(all_runs(flow))
         assert "--draft=false" not in runs and "gh release edit" not in runs, name
         assert "/releases" not in runs, name
-        for call in re.findall(r"gh api [^\n]*", runs):  # reads only (GET, no fields)
-            assert name == "release.yml", call
-            assert not re.search(r" (-X|--method|-f|-F|--field|--raw-field|--input)\b", call), call
+        # Reads only: every gh api call (continued lines joined, any spacing)
+        # must be exactly one of the two known GETs, so no -X/-f/-F/--input.
+        calls = re.findall(r"\bgh\s+api\b[^\n]*", runs.replace("\\\n", " "))
+        assert sorted(calls) == sorted(READ_ONLY_GH_API.get(name, [])), (name, calls)
         uses = [step["uses"] for job in flow["jobs"].values()
                 for step in job.get("steps", []) if "uses" in step]
         for action in uses:  # no third-party release action could publish one
@@ -729,7 +737,10 @@ LINUX = buildinfo.CI_CHECKS[0]
     (ci_reply([ci_run(LINUX, status="in_progress", conclusion=None), *GREEN[1:]]),
      "is in_progress/None"),
     (ci_reply([ci_run(LINUX, app="someone-else"), *GREEN[1:]]), f"no '{LINUX}' check"),
+    (ci_reply([ci_run(LINUX, conclusion="skipped"), *GREEN[1:]]), "is completed/skipped"),
+    (ci_reply([ci_run(LINUX, conclusion="neutral"), *GREEN[1:]]), "is completed/neutral"),
     (ci_reply([ci_run(LINUX, conclusion="failure"), *GREEN]), "is completed/failure"),
+    (ci_reply([*GREEN, ci_run(LINUX, conclusion="failure")]), "is completed/failure"),
     (ci_reply(GREEN, total=101), "the list is incomplete"),
     ({"total_count": 0}, "no check_runs list"),
     ([], "no check_runs list"),
