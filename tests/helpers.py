@@ -1,5 +1,6 @@
 """Test fakes and helpers (no real audio devices, hotkeys or network)."""
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -101,6 +102,11 @@ class TimerFactory:
 def tone(seconds, rate=16000, amp=0.3):
     t = np.arange(int(seconds * rate)) / rate
     return (amp * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+
+def flush_logs():
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 
 def wait_for(predicate, timeout=5.0):

@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from helpers import flush_logs
 from transcription_flow import logsetup
 from transcription_flow.hotkey import HotkeyTracker, KeyboardHotkey
 from transcription_flow.output import KeyboardTyper
@@ -96,8 +97,7 @@ def test_none_streams_go_to_the_log(tmp_path, monkeypatch):
     sys.stderr.write("partial ")
     sys.stderr.write("warning line\n")
     sys.stderr.flush()
-    for h in logging.getLogger().handlers:
-        h.flush()
+    flush_logs()
     text = path.read_text("utf-8")
     assert "progress bar text" in text and "partial warning line" in text
     assert not sys.stderr.isatty()
@@ -123,8 +123,7 @@ def test_console_gets_one_line_and_the_file_gets_the_traceback(tmp_path, monkeyp
         raise RuntimeError("boom")
     except RuntimeError:
         log.warning("The overlay could not start.", exc_info=True)
-    for h in logging.getLogger().handlers:
-        h.flush()
+    flush_logs()
     assert console.getvalue() == "[!] The overlay could not start.\n"  # QA B1
     text = path.read_text("utf-8")
     assert "routine detail" in text and "Traceback" in text and "RuntimeError: boom" in text

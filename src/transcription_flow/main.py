@@ -15,10 +15,6 @@ EXIT_OK, EXIT_FAIL, EXIT_SETUP, EXIT_ALREADY_RUNNING = 0, 1, 2, 3
 EXIT_INTERRUPTED = 130
 
 
-class _Cancelled(Exception):
-    """Ctrl-C, already reported to the user."""
-
-
 def _parser() -> argparse.ArgumentParser:
     from .models import DEFAULT_MODEL, load_manifest
 
@@ -75,15 +71,13 @@ def _download(name: str, models_dir: Path, verify: bool = False):
 
     progress = _ConsoleProgress(name)
     try:
-        return models.download(name, models_dir, progress=progress, verify=verify)
+        try:
+            return models.download(name, models_dir, progress=progress, verify=verify)
+        finally:
+            progress.end_line()
     except models.ModelError as err:
-        progress.end_line()
         _notify(f"Model download failed: {err}")
         return None
-    except KeyboardInterrupt:
-        progress.end_line()
-        _notify("Download cancelled. Run it again to resume.")
-        raise _Cancelled from None
 
 
 def _selftest(wav: Path, model_dir: Path, expect) -> int:
@@ -184,11 +178,10 @@ def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _main(args)
-    except _Cancelled:
-        return EXIT_INTERRUPTED
     except KeyboardInterrupt:
         if sys.stderr is not None:  # logging may not be set up yet
-            print("\n[!] Cancelled.", file=sys.stderr, flush=True)
+            print("[!] Cancelled. A model download that was cut short resumes next time.",
+                  file=sys.stderr, flush=True)
         return EXIT_INTERRUPTED
 
 

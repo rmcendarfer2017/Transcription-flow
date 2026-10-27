@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from helpers import tone, wait_for
+from helpers import flush_logs, tone, wait_for
 from transcription_flow.controller import Controller, State
 from transcription_flow.recorder import NoMicrophoneError, SilentMicrophoneError
 
@@ -312,8 +312,7 @@ def test_transcript_never_reaches_the_log_even_in_an_error(timers, caplog, tmp_p
         assert idle(ctl) and errors
     finally:
         ctl.shutdown(timeout=5)
-    for handler in logging.getLogger().handlers:
-        handler.flush()
+    flush_logs()
     assert any("RuntimeError" in r.getMessage() for r in caplog.records)  # it was logged
     assert "CANARY" not in caplog.text
     assert "CANARY" not in log_file.read_text("utf-8")

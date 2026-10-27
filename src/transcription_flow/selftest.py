@@ -17,8 +17,11 @@ from .engine import WhisperEngine
 from .recorder import TARGET_RATE, resample
 
 _PCM, _FLOAT, _EXTENSIBLE = 1, 3, 0xFFFE
-_DTYPES = {(_PCM, 1): "u1", (_PCM, 2): "<i2", (_PCM, 4): "<i4",
-           (_FLOAT, 4): "<f4", (_FLOAT, 8): "<f8"}
+# (format, bytes per sample) -> (numpy dtype, offset, scale) to map samples to -1..1.
+# 24-bit PCM is widened to <i4 with a zero low byte first.
+_DECODE = {(_PCM, 1): ("u1", 128.0, 128.0), (_PCM, 2): ("<i2", 0.0, 2.0 ** 15),
+           (_PCM, 3): ("<i4", 0.0, 2.0 ** 31), (_PCM, 4): ("<i4", 0.0, 2.0 ** 31),
+           (_FLOAT, 4): ("<f4", 0.0, 1.0), (_FLOAT, 8): ("<f8", 0.0, 1.0)}
 
 
 def _chunks(raw: bytes) -> dict:
@@ -51,20 +54,14 @@ def read_wav(path: Path) -> np.ndarray:
         raise ValueError("WAV file with a broken format chunk")
     width = block // channels
     data = chunks["data"][:len(chunks["data"]) // block * block]
-    if (tag, width) == (_PCM, 3):  # 24-bit: widen to int32 with a zero low byte
+    if (tag, width) not in _DECODE:
+        raise ValueError(f"unsupported WAV format (format {tag}, {width}-byte samples)")
+    dtype, offset, scale = _DECODE[tag, width]
+    if width == 3:
         wide = np.zeros((len(data) // 3, 4), dtype=np.uint8)
         wide[:, 1:] = np.frombuffer(data, dtype=np.uint8).reshape(-1, 3)
-        audio = wide.view("<i4").ravel().astype(np.float32) / 2.0 ** 31
-    elif (tag, width) in _DTYPES:
-        samples = np.frombuffer(data, dtype=_DTYPES[tag, width])
-        if tag == _FLOAT:
-            audio = samples.astype(np.float32)
-        elif width == 1:
-            audio = (samples.astype(np.float32) - 128.0) / 128.0
-        else:
-            audio = samples.astype(np.float32) / float(2 ** (8 * width - 1))
-    else:
-        raise ValueError(f"unsupported WAV format (format {tag}, {width}-byte samples)")
+        data = wide.tobytes()
+    audio = (np.frombuffer(data, dtype=dtype).astype(np.float32) - offset) / scale
     if channels > 1:
         audio = audio.reshape(-1, channels).mean(axis=1)
     return resample(audio, rate, TARGET_RATE)
@@ -77,16 +74,19 @@ def run(wav: Path, model_dir: Path, expect: str = None) -> dict:
     loaded = time.monotonic()
     text = engine.transcribe(audio)
     finished = time.monotonic()
+    reason = None
+    if not text:
+        reason = "no speech detected"
+    elif expect is not None and expect.lower() not in text.lower():
+        reason = "the expected text was not found"
     report = {
-        "ok": bool(text) and (expect is None or expect.lower() in text.lower()),
+        "ok": reason is None,
         "text": text,
         "model": Path(model_dir).name,
         "audio_seconds": round(len(audio) / TARGET_RATE, 2),
         "load_seconds": round(loaded - started, 2),
         "transcribe_seconds": round(finished - loaded, 2),
     }
-    if not text:
-        report["reason"] = "no speech detected"
-    elif not report["ok"]:
-        report["reason"] = "the expected text was not found"
+    if reason:
+        report["reason"] = reason
     return report

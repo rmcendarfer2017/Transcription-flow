@@ -27,6 +27,9 @@ def write_wav(path, samples, rate, width=2, channels=1):
         w.setframerate(rate)
         if width == 1:
             data = (samples * 127 + 128).astype(np.uint8)
+        elif width == 3:  # the low 3 bytes of each little-endian int32
+            wide = (samples * (2 ** 23 - 1)).astype("<i4")
+            data = wide.view(np.uint8).reshape(-1, 4)[:, :3]
         else:
             data = (samples * (2 ** (8 * width - 1) - 1)).astype(f"<i{width}")
         w.writeframes(data.tobytes())
@@ -63,9 +66,7 @@ def write_raw_wav(path, tag, channels, rate, width, data, extensible=False):
 
 
 def test_read_24bit_wav(tmp_path):
-    samples = (tone(1.0, amp=0.5) * (2 ** 23 - 1)).astype("<i4")
-    data = b"".join(int(v).to_bytes(3, "little", signed=True) for v in samples)
-    write_raw_wav(tmp_path / "24.wav", 1, 1, 16000, 3, data)
+    write_wav(tmp_path / "24.wav", tone(1.0, amp=0.5), 16000, width=3)
     audio = read_wav(tmp_path / "24.wav")
     assert len(audio) == 16000
     assert np.allclose(audio, tone(1.0, amp=0.5), atol=1e-4)
@@ -181,7 +182,7 @@ def test_ctrl_c_during_a_download_gives_one_line_and_exit_130(monkeypatch, capsy
     assert app.main(["--download-model", "--model", "tiny.en"]) == 130
     err = capsys.readouterr().err
     assert "Traceback" not in err
-    assert err.endswith("\n[!] Download cancelled. Run it again to resume.\n")
+    assert err.endswith("MB)\n[!] Cancelled. A model download that was cut short resumes next time.\n")
 
 
 def test_ctrl_c_elsewhere_exits_130_without_a_traceback(monkeypatch, capsys):
