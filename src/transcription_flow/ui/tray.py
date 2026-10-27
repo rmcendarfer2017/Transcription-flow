@@ -46,7 +46,8 @@ def make_icon(paused: bool = False, size: int = ICON_SIZE):
 # pystray's MenuItem counts an action's positional parameters, defaults
 # included (co_argcount), and raises ValueError above two: a
 # ``lambda icon, item, cb=callback: cb()`` crashed the app at start on
-# Windows. So bind the values in a closure, not with default arguments.
+# Windows. So bind the callback in a closure, not with a default argument
+# (the check mark the same way, for one pattern; pystray only calls it).
 def _action(callback):
     return lambda icon, item: callback()
 

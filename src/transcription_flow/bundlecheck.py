@@ -50,12 +50,14 @@ def _backends(platform: str) -> str:
 
 
 def _tray_menu() -> str:
-    """Builds the tray menu with the real pystray, without an icon: pystray
-    checks each callback's parameters when a MenuItem is made, and a bad one
-    crashed the M4 build at start."""
+    """Draws the tray icon and builds the menu with the real pystray, without
+    showing anything: pystray checks each callback's parameters when a
+    MenuItem is made, and a bad one crashed the M4 build at start."""
     import pystray
 
-    from transcription_flow.ui.tray import Tray, TrayActions
+    from transcription_flow.ui.tray import Tray, TrayActions, make_icon
+
+    make_icon()
 
     def noop():
         pass

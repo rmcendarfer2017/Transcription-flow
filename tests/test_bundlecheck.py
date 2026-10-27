@@ -152,22 +152,14 @@ def test_a_broken_app_module_fails(monkeypatch):
     assert "no_such_module" in result["checks"]["app modules"]
 
 
-@pytest.mark.parametrize("action, expected", [
-    (tray._action, "7 items"),
-    # The M4 crash: pystray refuses an action with a third (default) parameter.
-    (lambda callback: lambda icon, item, cb=callback: cb(),
-     "FAIL ValueError: <function"),
-])
-def test_the_tray_menu_check_builds_the_menu_with_pystrays_rules(monkeypatch, action, expected):
+def test_the_tray_menu_check_builds_the_menu_with_pystrays_rules(monkeypatch):
     monkeypatch.setitem(sys.modules, "pystray",
                         SimpleNamespace(Menu=FakeMenu, MenuItem=FakeMenuItem))
-    monkeypatch.setattr(tray, "_action", action)
-    for name in ("_sounddevice", "_tk", "_app_modules"):
-        monkeypatch.setattr(bundlecheck, name, lambda: "ok")
-    monkeypatch.setattr(bundlecheck, "_backends", lambda platform: "ok")
-    result = bundlecheck.run()
-    assert result["checks"]["tray menu"].startswith(expected)
-    assert result["ok"] is (expected == "7 items")
+    assert bundlecheck._tray_menu() == "7 items"
+    # The M4 crash: pystray refuses an action with a third (default) parameter.
+    monkeypatch.setattr(tray, "_action", lambda callback: lambda icon, item, cb=callback: cb())
+    with pytest.raises(ValueError):
+        bundlecheck._tray_menu()
 
 
 def test_the_hidden_flag_runs_it_and_prints_the_report_last(tmp_path):
