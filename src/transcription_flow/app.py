@@ -40,6 +40,9 @@ def open_folder(path) -> None:
         log.info("open this yourself: %s", path)
 
 
+TRAY_STEP = 5  # percent between tray status updates during a download
+
+
 def _spawn(fn) -> None:
     threading.Thread(target=fn, name="model", daemon=True).start()
 
@@ -48,14 +51,19 @@ class _Job:
     """One download-and-load; a newer choice cancels it."""
 
     def __init__(self, name, language, downloading):
-        self.target = (name, language)
+        self.name, self.language = name, language
         self.downloading = downloading
         self.percent = 0
         self.cancel = threading.Event()
 
     @property
-    def name(self):
-        return self.target[0]
+    def target(self):
+        return self.name, self.language
+
+    @property
+    def fetching(self) -> bool:
+        """Still downloading (then it loads)."""
+        return self.downloading and self.percent < 100
 
 
 class App:
@@ -101,7 +109,7 @@ class App:
             return f"Error: {self._error}"
         job = self._job
         if job is not None:
-            if job.downloading and job.percent < 100:
+            if job.fetching:
                 return f"Downloading {job.name} {job.percent}%"
             return f"Loading {job.name}"
         if self._model is None:
@@ -150,6 +158,10 @@ class App:
         caller has logged it."""
         self._ui_call(lambda: self._show_error(message))
 
+    def notify(self, message: str) -> None:
+        """Any thread: a toast that isn't an error (the status line stays)."""
+        self._ui_call(lambda: self._tray.notify(message))
+
     def _show_error(self, message: str) -> None:
         self._error = message
         self._refresh()
@@ -171,7 +183,7 @@ class App:
         if self._model is None:  # nothing to transcribe with yet
             job = self._job
             notice = (STILL_DOWNLOADING.format(name=job.name, percent=job.percent)
-                      if job is not None and job.downloading else NO_MODEL_NOTICE)
+                      if job is not None and job.fetching else NO_MODEL_NOTICE)
             self._ui_call(lambda: self._tray.notify(notice))
             return
         if unchecked and not self._unchecked_noticed:
@@ -236,11 +248,17 @@ class App:
         self._wizard = None
 
     def apply_settings(self, form) -> None:
-        self.update_config(form.to_config(self.config), form.start_with_windows)
+        """Settings' Save: also fetches the chosen model if it isn't the one
+        running (the start-up toast tells the user to press Save for that)."""
+        new = form.to_config(self.config)
+        self.update_config(new, form.start_with_windows)
+        self.use_model(new.model, new.language)
 
     def update_config(self, new, start_with_windows=None) -> None:
         """Apply each change live, then save. Settings and the setup window
-        both come here; ``start_with_windows`` None leaves autostart alone."""
+        both come here; ``start_with_windows`` None leaves autostart alone.
+        The model is switched only by use_model, so picking a mic in the
+        setup window never starts a download."""
         old = self.config
         if new.hotkey != old.hotkey and not self._set_hotkey(new.hotkey):
             new = dataclasses.replace(new, hotkey=old.hotkey)
@@ -254,7 +272,6 @@ class App:
         if start_with_windows is not None:
             self._apply_autostart(start_with_windows)
         self.config = new
-        self.use_model(new.model, new.language)
         try:
             config_mod.save(new, self._config_path)
         except OSError as err:
@@ -332,7 +349,8 @@ class App:
 
     def _job_progress(self, job) -> None:
         if job is self._job:
-            self._refresh()
+            if job.percent % TRAY_STEP == 0:  # each refresh rebuilds the tray menu
+                self._refresh()
             self._tell_wizard()
 
     def _job_done(self, job, engine) -> None:
@@ -357,9 +375,6 @@ class App:
     def _tell_wizard(self, error=None) -> None:
         if self._wizard is not None:
             self._wizard.model_changed(error)
-
-    def models_folder(self):
-        return self._models.folder
 
     def open_models_folder(self) -> None:
         folder = self._models.folder

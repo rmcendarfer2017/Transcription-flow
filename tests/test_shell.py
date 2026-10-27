@@ -232,8 +232,10 @@ def test_form_fixes_a_language_the_model_cannot_use():
     assert form.to_config().language == "en"
 
 
-def test_model_choices_are_sized_and_mark_the_default():
-    labels_ = model_choices()
+def test_model_choices_are_sized_and_mark_the_default(tmp_path):
+    from transcription_flow.model_service import ModelService
+
+    labels_ = model_choices(ModelService(tmp_path))
     assert list(labels_) == ["tiny.en", "base.en", "small.en"]  # smallest first
     assert labels_["small.en"].endswith("MB, recommended)")
     assert "recommended" not in labels_["tiny.en"]
@@ -686,9 +688,43 @@ def test_cancel_download_stops_it_quietly(shell):
 
 def test_a_language_change_reloads_the_same_model(shell):
     a, p = shell
-    a.update_config(dataclasses.replace(a.config, language="de"))  # as if multilingual
+    a.use_model("small.en", "de")  # as if multilingual
     run_job(p)
     assert p["models"].calls == [("load", "small.en", "de")]
+
+
+def test_a_setup_window_change_never_starts_a_model_download(first_run):
+    """Picking a mic or a key on the first run must not fetch ~500 MB."""
+    a, p = first_run
+    a.update_config(dataclasses.replace(a.config, mic="Headset mic"))
+    a.update_config(dataclasses.replace(a.config, hotkey="f9"))
+    assert a.job is None and p["jobs"] == [] and p["models"].calls == []
+
+
+def test_settings_save_fetches_the_configured_model_the_start_fell_back_from(shell):
+    """The start-up toast says: open Settings and press Save to download it."""
+    a, p = shell
+    a.config = Config(model="base.en")
+    save(a, p)
+    assert a.job is not None and a.job.name == "base.en"
+
+
+def test_a_notice_is_a_toast_not_an_error(shell):
+    a, p = shell
+    a.start()
+    a.notify("The text was pasted, but part of your clipboard could not be put back.")
+    assert p["tray"].notes[-1].startswith("The text was pasted")
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+
+
+def test_download_progress_updates_the_tray_every_few_percent(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    job, before = a.job, len(p["tray"].statuses)
+    for percent in range(1, 11):
+        a._progress(job, percent, 100)
+    assert [s for s, _ in p["tray"].statuses[before:]] == ["Downloading base.en 5%",
+                                                           "Downloading base.en 10%"]
 
 
 def test_a_mic_change_goes_to_the_controller(shell):
@@ -740,7 +776,7 @@ def test_a_press_with_no_model_explains_and_records_nothing(first_run):
     a, p = first_run
     a.press(False)
     assert p["ctl"].calls == [] and p["tray"].notes == [app_mod.NO_MODEL_NOTICE]
-    a.update_config(dataclasses.replace(a.config, model="base.en"))
+    a.use_model("base.en", "en")
     p["models"].before_finish = lambda: a.press(False)
     run_job(p)
     assert app_mod.STILL_DOWNLOADING.format(name="base.en", percent=50) in p["tray"].notes
@@ -751,7 +787,7 @@ def test_a_press_with_no_model_explains_and_records_nothing(first_run):
 
 def test_the_first_download_says_dictation_starts_when_ready(first_run):
     a, p = first_run
-    a.update_config(dataclasses.replace(a.config, model="tiny.en"))
+    a.use_model("tiny.en", "en")
     assert p["tray"].notes[-1] == ("Downloading the tiny.en model (77 MB). Dictation starts "
                                    "when it's ready.")
 
@@ -759,7 +795,7 @@ def test_the_first_download_says_dictation_starts_when_ready(first_run):
 def test_the_setup_window_hears_every_model_step(first_run):
     a, p = first_run
     a.open_wizard()
-    a.update_config(dataclasses.replace(a.config, model="tiny.en"))
+    a.use_model("tiny.en", "en")
     run_job(p)
     events = p["wizards"][0].events
     assert events == [None, None, None, None]  # started, 50%, 100%, ready

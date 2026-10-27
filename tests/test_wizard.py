@@ -1,10 +1,10 @@
 """The setup window's flow and texts (WizardFlow), without a display."""
 
 import dataclasses
-import types
 
 import pytest
 
+from transcription_flow.app import _Job
 from transcription_flow.config import Config
 from transcription_flow.recorder import LevelMeter
 from transcription_flow.ui import wizard
@@ -49,6 +49,9 @@ class FakeApp:
     def retry_model(self):
         self.retried += 1
 
+    def use_model(self, name, language):
+        self.used = (name, language)
+
     # used by the Tk window only (test_windows_ui.py)
     meter_factory = None
     opened = ()
@@ -67,7 +70,9 @@ class FakeApp:
 
 
 def job(name, percent=0, downloading=True):
-    return types.SimpleNamespace(name=name, percent=percent, downloading=downloading)
+    j = _Job(name, "en", downloading)
+    j.percent = percent
+    return j
 
 
 @pytest.fixture
@@ -121,21 +126,18 @@ def test_choosing_a_mic_saves_it_once(flow):
     assert [c.mic for c in flow.app.updates] == ["Headset mic"]
 
 
-@pytest.mark.parametrize("status, blocked", [
-    (LevelMeter.LISTENING, False), (LevelMeter.HEARD, False), (LevelMeter.QUIET, False),
-    (LevelMeter.BLOCKED, True)])
-def test_mic_texts_and_the_privacy_button(flow, status, blocked):
-    assert flow.mic_text(status)
-    assert flow.mic_blocked(status) is blocked
-    assert ("Privacy & security" in flow.mic_text(status)) is blocked
+@pytest.mark.parametrize("status", [
+    LevelMeter.LISTENING, LevelMeter.HEARD, LevelMeter.QUIET, LevelMeter.BLOCKED])
+def test_each_mic_status_has_a_text_and_only_blocked_names_the_privacy_switch(status):
+    assert ("Privacy & security" in wizard.MIC_TEXT[status]) is (status == LevelMeter.BLOCKED)
 
 
 def test_model_choices_show_sizes_default_and_downloaded(flow):
     flow.app.models.have = {"tiny.en"}
     choices = flow.model_choices()
     assert list(choices) == ["tiny.en", "base.en", "small.en"]
-    assert choices["tiny.en"] == "tiny.en (78 MB, downloaded)"  # sizes from the manifest
-    assert choices["small.en"] == "small.en (486 MB, recommended)"
+    assert choices["tiny.en"] == "tiny.en (77 MB, downloaded)"  # sizes from the service
+    assert choices["small.en"] == "small.en (484 MB, recommended)"
 
 
 def test_choosing_a_model_saves_it_with_a_language_it_knows(flow):
@@ -143,7 +145,13 @@ def test_choosing_a_model_saves_it_with_a_language_it_knows(flow):
     flow.error = "old failure"
     flow.choose_model("base.en")
     assert flow.app.config.model == "base.en" and flow.app.config.language == "en"
-    assert flow.error is None
+    assert flow.app.used == ("base.en", "en") and flow.error is None
+
+
+def test_choosing_the_configured_model_still_fetches_it(flow):
+    """First run: small.en is already in the config but not downloaded."""
+    flow.choose_model("small.en")
+    assert flow.app.used == ("small.en", "en")
 
 
 @pytest.mark.parametrize("state, text, percent, busy, failed", [
@@ -187,7 +195,6 @@ def test_choosing_a_hotkey_saves_it_once(flow):
     flow.choose_hotkey("f9")
     flow.choose_hotkey("f9")
     assert [c.hotkey for c in flow.app.updates] == ["f9"]
-    assert flow.hotkey_choices()["f9"] == "F9"
 
 
 def test_texts_say_inspired_by_and_never_clone():

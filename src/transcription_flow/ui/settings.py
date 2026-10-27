@@ -10,8 +10,11 @@ import logging
 
 from ..config import Config, language_for, languages_for
 from ..hotkey import HOTKEYS
-from ..models import DEFAULT_MODEL, load_manifest, size_label
+from ..model_service import ModelService
+from ..models import DEFAULT_MODEL, size_label
 from ..output import OUTPUT_MODES
+from ..paths import models_dir
+from ..recorder import MicrophoneError
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +22,7 @@ TITLE = "Transcription Flow settings"
 MODEL_NOTE = ("A model that isn't downloaded yet downloads when you save (progress in the tray "
               "icon); the current one keeps working until it's ready.")
 DEFAULT_MIC_LABEL = "Windows default microphone"
+NO_METER = "The microphone can't be tested here."
 
 
 @dataclasses.dataclass
@@ -44,14 +48,13 @@ class Form:
                                    keep_mic_warm=self.keep_mic_warm, mic=self.mic)
 
 
-def model_choices(installed=()) -> dict:
-    """name -> label with the download size, smallest first; the names in
-    ``installed`` are marked "downloaded"."""
-    models = load_manifest()["models"]
-    sizes = {name: sum(f["size"] for f in spec["files"]) for name, spec in models.items()}
+def model_choices(service) -> dict:
+    """name -> label with the download size, smallest first; installed
+    models are marked "downloaded". ``service`` is a ModelService."""
+    installed = set(service.installed())
     labels = {}
-    for name in sorted(models, key=sizes.get):
-        notes = [size_label(sizes[name])]
+    for name in service.names():
+        notes = [size_label(service.size(name))]
         if name == DEFAULT_MODEL:
             notes.append("recommended")
         if name in installed:
@@ -73,11 +76,64 @@ def hotkey_choices() -> dict:
     return {key: spec.label for key, spec in HOTKEYS.items()}
 
 
+# -- Tk helpers shared with the setup window (Tk thread only) -------------------
+
+def make_combo(parent, choices: dict, value, width=36):
+    """A read-only dropdown of ``choices`` labels showing ``value``'s (or the first)."""
+    from tkinter import ttk
+
+    combo = ttk.Combobox(parent, state="readonly", values=list(choices.values()), width=width)
+    combo.set(choices.get(value, next(iter(choices.values()))))
+    return combo
+
+
+def combo_key(combo, choices: dict):
+    """The key of the label a dropdown shows."""
+    label = combo.get()
+    return next(key for key, text in choices.items() if text == label)
+
+
+class MeterPoller:
+    """Runs a LevelMeter for a window: ``on_tick(meter)`` every METER_MS on
+    the Tk loop until ``stop()``; one stream at a time."""
+
+    METER_MS = 100
+
+    def __init__(self, widget, factory, on_tick):
+        self._widget, self._factory, self._on_tick = widget, factory, on_tick
+        self._meter = self._after = None
+
+    def start(self, device):
+        """Test ``device`` (None: the default); returns an error message or None."""
+        self.stop()
+        if self._factory is None:
+            return None
+        meter = self._factory(device)
+        try:
+            meter.start()
+        except (MicrophoneError, OSError) as err:  # OSError: no audio system at all
+            log.info("level meter unavailable (%s)", type(err).__name__)
+            return str(err) if isinstance(err, MicrophoneError) else NO_METER
+        self._meter = meter
+        self._tick()
+        return None
+
+    def _tick(self) -> None:
+        self._on_tick(self._meter)
+        self._after = self._widget.after(self.METER_MS, self._tick)
+
+    def stop(self) -> None:
+        if self._after is not None:
+            self._widget.after_cancel(self._after)
+            self._after = None
+        if self._meter is not None:
+            self._meter.stop()
+            self._meter = None
+
+
 class SettingsWindow:
     """One Toplevel; ``on_save(form)`` runs on the Tk thread. ``app`` gives
     the microphone list, the level meter and the installed models."""
-
-    METER_MS = 100
 
     def __init__(self, parent, form: Form, autostart_available: bool, on_save, on_close=None,
                  app=None):
@@ -86,12 +142,10 @@ class SettingsWindow:
 
         self._on_save = on_save
         self._on_close = on_close
-        self._app = app
-        self._meter = self._meter_job = None
-        installed = set(app.models.installed()) if app is not None else ()
+        service = app.models if app is not None else ModelService(models_dir())
         mics = app.mic_list() if app is not None else []
         self._hotkeys, self._models, self._outputs, self._mics = (
-            hotkey_choices(), model_choices(installed), dict(OUTPUT_MODES),
+            hotkey_choices(), model_choices(service), dict(OUTPUT_MODES),
             mic_choices(mics, form.mic))
         win = self.window = tk.Toplevel(parent)
         win.title(TITLE)
@@ -111,6 +165,8 @@ class SettingsWindow:
         self.mic.bind("<<ComboboxSelected>>", lambda e: self._start_meter())
         self.meter_bar = ttk.Progressbar(frame, length=200, maximum=1.0)
         self.meter_bar.grid(row=5, column=1, sticky="w", pady=(0, 4))
+        self._meter = MeterPoller(win, app.meter_factory if app is not None else None,
+                                  lambda meter: self.meter_bar.configure(value=meter.level()))
 
         self.keep_warm = tk.BooleanVar(value=form.keep_mic_warm)
         ttk.Checkbutton(frame, text="Keep the microphone open between dictations "
@@ -141,15 +197,11 @@ class SettingsWindow:
         from tkinter import ttk
 
         ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
-        combo = ttk.Combobox(frame, state="readonly", values=list(choices.values()), width=36)
-        combo.set(choices.get(value, next(iter(choices.values()))))
+        combo = make_combo(frame, choices, value)
         combo.grid(row=row, column=1, sticky="ew", pady=4)
         return combo
 
-    @staticmethod
-    def _key(combo, choices: dict):
-        label = combo.get()
-        return next(key for key, text in choices.items() if text == label)
+    _key = staticmethod(combo_key)
 
     def _update_languages(self) -> None:
         current = self._key(self.language, self._languages)
@@ -159,33 +211,9 @@ class SettingsWindow:
         self.language.state(["disabled"] if len(self._languages) == 1 else ["!disabled",
                                                                              "readonly"])
 
-    # -- the level meter: the picked mic, saved or not ----------------------
     def _start_meter(self) -> None:
-        self._stop_meter()
-        if self._app is None or self._app.meter_factory is None:
-            return
-        meter = self._app.meter_factory(self._key(self.mic, self._mics) or None)
-        try:
-            meter.start()
-        except Exception as err:  # MicrophoneError: no bar, the save still works
-            log.info("level meter unavailable (%s)", type(err).__name__)
-            return
-        self._meter = meter
-        self._tick_meter()
-
-    def _tick_meter(self) -> None:
-        if self._meter is None or self.window is None:
-            return
-        self.meter_bar.configure(value=self._meter.level())
-        self._meter_job = self.window.after(self.METER_MS, self._tick_meter)
-
-    def _stop_meter(self) -> None:
-        if self._meter_job is not None and self.window is not None:
-            self.window.after_cancel(self._meter_job)
-        self._meter_job = None
-        if self._meter is not None:
-            self._meter.stop()
-            self._meter = None
+        """The picked mic, saved or not; no bar if it can't be opened."""
+        self._meter.start(self._key(self.mic, self._mics) or None)
 
     def form(self) -> Form:
         return Form(hotkey=self._key(self.hotkey, self._hotkeys),
@@ -202,7 +230,7 @@ class SettingsWindow:
         self._on_save(form)
 
     def close(self) -> None:
-        self._stop_meter()
+        self._meter.stop()
         if self.window is not None:
             self.window.destroy()
             self.window = None

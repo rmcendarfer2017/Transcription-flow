@@ -453,3 +453,22 @@ def test_a_new_transcriber_takes_the_next_clip(parts):
     ctl.release()
     assert idle(ctl)
     assert out.typed == ["from the new model"] and eng.calls == 0 and newer.calls == 1
+
+
+def test_an_output_warning_goes_to_the_notice_channel_when_there_is_one(timers):
+    notices, errors = [], []
+
+    class Warns:
+        def emit(self, text):
+            raise OutputWarning("pasted, clipboard partly lost")
+
+    ctl = Controller(FakeRecorder(), FakeTranscriber(["hi"]), Warns(), on_error=errors.append,
+                     on_notice=notices.append, timer=timers)
+    ctl.start()
+    try:
+        ctl.press()
+        ctl.release()
+        assert idle(ctl)
+        assert notices == ["pasted, clipboard partly lost"] and errors == []
+    finally:
+        ctl.shutdown(timeout=5)

@@ -219,7 +219,7 @@ def _run_dictation(args, settings, models_dir, log_file) -> int:
     # The settle is a file-only setting, read at start.
     output_factory = functools.partial(make_output, settle=settings.paste_settle_seconds)
     controller = Controller(recorder, engine, output_factory(settings.output), ui=on_state,
-                            on_error=report)
+                            on_error=report, on_notice=lambda message: app.notify(message))
     controller.start()
     app = App(settings, paths.config_file(), controller,
               Hotkey(lambda unchecked: app.press(unchecked), controller.release,

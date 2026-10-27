@@ -39,13 +39,16 @@ def _thread_timer(seconds, callback):
 
 
 class Controller:
-    def __init__(self, recorder, transcriber, output, ui=None, on_error=None,
+    def __init__(self, recorder, transcriber, output, ui=None, on_error=None, on_notice=None,
                  timer=_thread_timer, min_seconds=MIN_SECONDS, max_seconds=MAX_SECONDS):
+        """``on_notice(message)``: something the user should hear about that
+        isn't an error (default: on_error)."""
         self._recorder = recorder
         self._transcriber = transcriber
         self._output = output
         self._ui = ui or (lambda state: None)
         self._on_error = on_error or (lambda message: None)
+        self._on_notice = on_notice or self._on_error
         self._timer = timer
         self._min_seconds = min_seconds
         self._max_seconds = max_seconds
@@ -229,8 +232,9 @@ class Controller:
                     output.emit(text)
                 else:
                     log.info("no speech detected")
-            except OutputWarning as warning:  # the text went out
-                self._error(warning)
+            except OutputWarning as warning:  # the text went out: not an error
+                log.warning("%s", warning)
+                self._on_notice(str(warning))
             except Exception as err:
                 # Type and frames only: an exception's message (or a chained
                 # one's) may hold the transcript (review F7).

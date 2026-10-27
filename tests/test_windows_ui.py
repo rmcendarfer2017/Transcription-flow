@@ -103,7 +103,7 @@ def test_wizard_window_walks_every_step(root):
     win.next()  # mic: the meter runs and the blocked case shows the privacy button
     root.update()
     assert meters[0].started == 1 and meters[0].device is None
-    win._tick_meter()
+    win._meter._tick()
     root.update()
     assert win.privacy_button.winfo_ismapped()
     assert "blocking" in win.mic_label.cget("text")

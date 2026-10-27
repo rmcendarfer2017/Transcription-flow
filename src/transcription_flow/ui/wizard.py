@@ -11,8 +11,8 @@ import logging
 
 from ..config import language_for
 from ..models import size_label
-from ..recorder import LevelMeter, MicrophoneError
-from .settings import hotkey_choices, mic_choices, model_choices
+from ..recorder import LevelMeter
+from .settings import MeterPoller, combo_key, hotkey_choices, make_combo, mic_choices, model_choices
 
 log = logging.getLogger(__name__)
 
@@ -79,17 +79,9 @@ class WizardFlow:
         if name != self.app.config.mic:
             self.app.update_config(dataclasses.replace(self.app.config, mic=name))
 
-    @staticmethod
-    def mic_text(status: str) -> str:
-        return MIC_TEXT[status]
-
-    @staticmethod
-    def mic_blocked(status: str) -> bool:
-        return status == LevelMeter.BLOCKED
-
     # -- model ------------------------------------------------------------
     def model_choices(self) -> dict:
-        return model_choices(set(self.app.models.installed()))
+        return model_choices(self.app.models)
 
     def chosen_model(self) -> str:
         job = self.app.job
@@ -98,9 +90,10 @@ class WizardFlow:
     def choose_model(self, name: str) -> None:
         """Download (if needed) and switch to ``name``."""
         self.error = None
-        config = self.app.config
-        self.app.update_config(dataclasses.replace(
-            config, model=name, language=language_for(name, config.language)))
+        config = dataclasses.replace(self.app.config, model=name,
+                                     language=language_for(name, self.app.config.language))
+        self.app.update_config(config)
+        self.app.use_model(config.model, config.language)
 
     def retry(self) -> None:
         self.error = None
@@ -117,7 +110,7 @@ class WizardFlow:
     def model_view(self) -> ModelView:
         app, job = self.app, self.app.job
         if job is not None:
-            if job.downloading and job.percent < 100:
+            if job.fetching:
                 size = size_label(app.models.size(job.name))
                 return ModelView(f"Downloading {job.name}: {job.percent}% of {size}. You can "
                                  "close this window; the download carries on.",
@@ -131,10 +124,6 @@ class WizardFlow:
         return ModelView("Pick a model and press Download. It is a one-time download.")
 
     # -- hotkey and try ---------------------------------------------------
-    @staticmethod
-    def hotkey_choices() -> dict:
-        return hotkey_choices()
-
     def choose_hotkey(self, key: str) -> None:
         if key != self.app.config.hotkey:
             self.app.update_config(dataclasses.replace(self.app.config, hotkey=key))
@@ -152,8 +141,6 @@ class WizardFlow:
 class WizardWindow:
     """The Tk view of a WizardFlow; ``model_changed`` is called by the app."""
 
-    METER_MS = 100
-
     def __init__(self, parent, app, on_close=None):
         import tkinter as tk
         from tkinter import ttk
@@ -162,8 +149,6 @@ class WizardWindow:
         self.flow = WizardFlow(app)
         self._app = app
         self._on_close = on_close
-        self._meter = None
-        self._meter_job = None
         win = self.window = tk.Toplevel(parent)
         win.title(TITLE)
         win.resizable(False, False)
@@ -181,6 +166,7 @@ class WizardWindow:
         self.next_button = ttk.Button(nav, text="Next", command=self.next, default="active")
         self.next_button.grid(row=0, column=1)
         win.bind("<Escape>", lambda e: self.close())
+        self._meter = MeterPoller(win, app.meter_factory, self._show_level)
         self.render()
         win.lift()
         win.focus_force()
@@ -198,7 +184,7 @@ class WizardWindow:
         self.render()
 
     def render(self) -> None:
-        self._stop_meter()
+        self._meter.stop()
         for child in self.body.winfo_children():
             child.destroy()
         step = self.flow.step
@@ -221,16 +207,9 @@ class WizardWindow:
         return label
 
     def _combo(self, row, choices: dict, value, on_pick):
-        combo = self._ttk.Combobox(self.body, state="readonly", values=list(choices.values()),
-                                   width=44)
-        combo.set(choices.get(value, next(iter(choices.values()))))
+        combo = make_combo(self.body, choices, value, width=44)
         combo.grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
-
-        def picked(_event):
-            label = combo.get()
-            on_pick(next(key for key, text in choices.items() if text == label))
-
-        combo.bind("<<ComboboxSelected>>", picked)
+        combo.bind("<<ComboboxSelected>>", lambda _e: on_pick(combo_key(combo, choices)))
         return combo
 
     # -- steps ------------------------------------------------------------
@@ -254,36 +233,18 @@ class WizardWindow:
         self._start_meter()
 
     def _start_meter(self) -> None:
-        self._stop_meter()
-        meter = self._app.meter_factory(self._app.config.mic or None)
-        try:
-            meter.start()
-        except MicrophoneError as err:
-            self.mic_label.configure(text=str(err))
-            return
-        self._meter = meter
-        self._tick_meter()
+        error = self._meter.start(self._app.config.mic or None)
+        if error:
+            self.mic_label.configure(text=error)
 
-    def _tick_meter(self) -> None:
-        meter = self._meter
-        if meter is None or self.window is None:
-            return
+    def _show_level(self, meter) -> None:
         status = meter.status()
         self.meter_bar.configure(value=meter.level())
-        self.mic_label.configure(text=self.flow.mic_text(status))
-        if self.flow.mic_blocked(status):
+        self.mic_label.configure(text=MIC_TEXT[status])
+        if status == LevelMeter.BLOCKED:
             self.privacy_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
         else:
             self.privacy_button.grid_remove()
-        self._meter_job = self.window.after(self.METER_MS, self._tick_meter)
-
-    def _stop_meter(self) -> None:
-        if self._meter_job is not None and self.window is not None:
-            self.window.after_cancel(self._meter_job)
-        self._meter_job = None
-        if self._meter is not None:
-            self._meter.stop()
-            self._meter = None
 
     def _render_model(self) -> None:
         flow, ttk = self.flow, self._ttk
@@ -292,7 +253,7 @@ class WizardWindow:
         for row, (name, label) in enumerate(choices.items()):
             ttk.Radiobutton(self.body, text=label, value=name, variable=self.model_var).grid(
                 row=row, column=0, columnspan=3, sticky="w")
-        row = len(choices)
+        row = self._progress_row = len(choices)
         self.download_button = ttk.Button(self.body, text="Download",
                                           command=lambda: flow.choose_model(self.model_var.get()))
         self.download_button.grid(row=row, column=0, sticky="w", pady=(8, 0))
@@ -315,8 +276,8 @@ class WizardWindow:
         if view.percent is None:
             self.progress.grid_remove()
         else:
-            self.progress.grid(row=len(self.flow.model_choices()) + 1, column=0, columnspan=3,
-                               sticky="w", pady=(8, 0))
+            self.progress.grid(row=self._progress_row + 1, column=0, columnspan=3, sticky="w",
+                               pady=(8, 0))
             self.progress.configure(value=view.percent)
         self.download_button.state(["disabled"] if view.busy else ["!disabled"])
         for column, (button, shown) in enumerate([
@@ -341,12 +302,12 @@ class WizardWindow:
     def _render_hotkey(self) -> None:
         self._text("Hold this key to dictate, let go to type. Keys that do nothing else are "
                    "best; Right Ctrl still works for shortcuts.", 0)
-        self.hotkey_combo = self._combo(1, self.flow.hotkey_choices(), self._app.config.hotkey,
+        self.hotkey_combo = self._combo(1, hotkey_choices(), self._app.config.hotkey,
                                         self._hotkey_picked)
 
     def _hotkey_picked(self, key) -> None:
         self.flow.choose_hotkey(key)
-        self.hotkey_combo.set(self.flow.hotkey_choices()[self._app.config.hotkey])
+        self.hotkey_combo.set(hotkey_choices()[self._app.config.hotkey])
 
     def _render_try(self) -> None:
         self._text(self.flow.try_text(), 0)
@@ -365,7 +326,7 @@ class WizardWindow:
             self.window.focus_force()
 
     def close(self) -> None:
-        self._stop_meter()
+        self._meter.stop()
         if self.window is not None:
             self.window.destroy()
             self.window = None
