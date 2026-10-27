@@ -48,7 +48,7 @@ transcription is typed at the current cursor position.
   cancels the recording, so shortcuts don't turn into dictation.
 - If the key's release is missed (focus moved to an admin window, the UAC
   prompt or the lock screen), the recording is cancelled after about 1.5 s
-  (longer if your keyboard repeat delay or Filter Keys asks for it), never
+  (longer if Filter Keys sets a slow key repeat), never
   typed into whatever has focus then, and a notification says so.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
