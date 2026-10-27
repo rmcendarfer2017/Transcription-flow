@@ -4,6 +4,8 @@ import logging
 import time
 from pathlib import Path
 
+from . import hallucination
+
 log = logging.getLogger(__name__)
 
 COMPUTE_TYPES = {"cpu": "int8", "cuda": "float16"}
@@ -31,5 +33,6 @@ class WhisperEngine:
 
     def transcribe(self, audio) -> str:
         self.load()
-        segments, _info = self._model.transcribe(audio, language=self.language, vad_filter=True)
-        return "".join(segment.text for segment in segments).strip()
+        segments, info = self._model.transcribe(audio, language=self.language, vad_filter=True)
+        text = "".join(segment.text for segment in segments).strip()
+        return hallucination.clean(text, info.duration_after_vad) if text else ""
