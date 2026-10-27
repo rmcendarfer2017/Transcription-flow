@@ -15,10 +15,10 @@ MANIFEST = {"version": 1, "models": {
     for name in reversed(NAMES)}}  # listed largest first on purpose
 
 
-def install(service, name):
+def install(service, name, manifest=MANIFEST):
     import json
 
-    spec = MANIFEST["models"][name]
+    spec = manifest["models"][name]
     folder = models.model_path(name, service.folder)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "model.bin").write_bytes(b"x" * spec["files"][0]["size"])
@@ -60,6 +60,17 @@ def test_startup_choice(service, have, wanted, chosen):
     for name in have:
         install(service, name)
     assert service.startup_choice(wanted) == chosen
+
+
+def test_startup_prefers_the_default_over_a_larger_installed_model(tmp_path):
+    """With a model bigger than the default installed, the default still wins."""
+    medium = {**MANIFEST["models"]["small.en"], "repo": "x/medium.en",
+              "files": [{"name": "model.bin", "size": 99, "sha256": "0" * 64}]}
+    manifest = {"version": 1, "models": {**MANIFEST["models"], "medium.en": medium}}
+    service = ModelService(tmp_path / "models", manifest=manifest)
+    for name in ("tiny.en", "small.en", "medium.en"):
+        install(service, name, manifest)
+    assert service.startup_choice("base.en") == models.DEFAULT_MODEL == "small.en"
 
 
 def test_download_reports_progress_and_passes_the_manifest(service):
