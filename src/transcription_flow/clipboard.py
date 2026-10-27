@@ -9,7 +9,8 @@ Our text carries the formats that tell Windows not to keep it in clipboard
 history or sync it to the cloud clipboard. They go on the clipboard before
 the text, in the same open, so a failure part way never leaves the text
 there without them (review-m2 F2). ``restore()`` puts the user's contents
-back exactly as saved, with no markers of ours (QA B5).
+back exactly as saved, with no markers of ours (QA B5), every format it can
+(review-m2 R1).
 
 ``user32`` and ``kernel32`` can be passed in, so the logic is tested on any
 platform with a fake clipboard API.
@@ -33,7 +34,13 @@ HWND_MESSAGE = -3
 
 
 class ClipboardError(Exception):
-    pass
+    """``seq`` is the sequence number right after a write of ours that
+    emptied the clipboard and then failed, or None when the failure left the
+    clipboard as it was (busy, or it could not be cleared). PasteOutput puts
+    the user's contents back only in the first case, and only while the
+    clipboard is still as we left it (review-m2 R2)."""
+
+    seq = None
 
 
 def _skip(fmt: int) -> bool:
@@ -119,16 +126,34 @@ class WindowsClipboard:
             k.GlobalFree(handle)
             raise ClipboardError("the clipboard did not take the data")
 
-    def _write(self, items) -> None:
-        """Empty the clipboard and put ``items`` in order, in one open."""
+    def _write(self, items, best_effort=False) -> None:
+        """Empty the clipboard and put ``items`` in order, in one open. The
+        first refused item raises, unless ``best_effort``: then every item
+        that can go back does, and one error at the end names the rest."""
         self._open()
+        emptied, failed, error = False, [], None
         try:
             if not self._u.EmptyClipboard():
                 raise ClipboardError("the clipboard could not be cleared")
+            emptied = True
             for fmt, data in items:
-                self._put(fmt, data)
+                try:
+                    self._put(fmt, data)
+                except ClipboardError:
+                    if not best_effort:
+                        raise
+                    failed.append(fmt)
+            if failed:
+                raise ClipboardError(f"{len(failed)} of {len(items)} formats could not be "
+                                     f"put back ({', '.join(hex(f) for f in failed)})")
+        except ClipboardError as err:
+            error = err
         finally:
             self._close()
+        if error is not None:
+            if emptied:
+                error.seq = self.sequence()
+            raise error
 
     # -- the interface PasteOutput uses ------------------------------------
     def sequence(self) -> int:
@@ -165,8 +190,9 @@ class WindowsClipboard:
 
     def restore(self, items) -> None:
         """Put saved contents back as they were (an empty list empties the
-        clipboard)."""
-        self._write(items)
+        clipboard). Best effort: a format the clipboard refuses doesn't stop
+        the others (review-m2 R1); ClipboardError at the end names it."""
+        self._write(items, best_effort=True)
 
     def get_text(self):
         """The clipboard's text or None (tests and diagnostics)."""

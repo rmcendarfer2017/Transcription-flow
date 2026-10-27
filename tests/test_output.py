@@ -42,7 +42,9 @@ class FakeClipboard:
         if self.fail_set == "part way":
             self.contents = [("privacy", b"\0\0\0\0")]
             self.seq += 1
-            raise clip_mod.ClipboardError("the clipboard did not take the data")
+            err = clip_mod.ClipboardError("the clipboard did not take the data")
+            err.seq = self.seq  # as WindowsClipboard._write reports a change it made
+            raise err
         self.contents = [("ours", text)]
         self.seq += 1
         return self.seq
@@ -101,6 +103,15 @@ def test_paste_restores_when_set_text_fails_part_way():
         out.emit("Hello")
     assert "ctrl+v" not in log and log[-1] == ("restore", [("text", b"theirs")])
     assert clip.contents == [("text", b"theirs")]
+
+
+def test_paste_after_a_part_way_failure_keeps_a_copy_made_meanwhile():
+    out, clip, log = paste_parts()
+    clip.fail_set = "part way"
+    clip.change_during_paste = True  # another app wrote after our failed write
+    with pytest.raises(clip_mod.ClipboardError):
+        out.emit("Hello")
+    assert not any(isinstance(e, tuple) and e[0] == "restore" for e in log)
 
 
 def test_paste_leaves_an_untouched_clipboard_alone_when_set_text_fails():
@@ -361,6 +372,58 @@ def test_restore_keeps_markers_the_user_had():
     clip.set_text("dictated")
     clip.restore(saved)
     assert user.data == dict(saved) and history in user.data
+
+
+def test_restore_puts_back_every_format_it_can_when_one_is_refused():
+    """review-m2 R1: a refused app format must not take the user's text with it."""
+    clip, user, kernel = fake_clipboard()
+    text = "theirs\0".encode("utf-16-le")
+    user.data = {CF_HTML: b"<b>x</b>", clip_mod.CF_UNICODETEXT: text, 0xC0FE: b"app"}
+    saved = clip.save()
+    clip.set_text("dictated")
+    user.refuse = {CF_HTML}
+    with pytest.raises(clip_mod.ClipboardError, match=r"1 of 3 formats .*0xc0ff"):
+        clip.restore(saved)
+    assert user.data == {clip_mod.CF_UNICODETEXT: text, 0xC0FE: b"app"}
+    assert user.puts[-3:] == [CF_HTML, clip_mod.CF_UNICODETEXT, 0xC0FE]  # one open, in order
+    assert kernel.blocks == {} and not user.is_open
+
+
+def test_set_text_reports_a_change_it_made_and_a_busy_clipboard_reports_none():
+    clip, user, kernel = fake_clipboard(refuse_names=[clip_mod.CF_UNICODETEXT])
+    with pytest.raises(clip_mod.ClipboardError) as info:
+        clip.set_text("dictated")
+    assert info.value.seq == user.seq  # emptied, markers on: changed by us
+    clip, user, kernel = fake_clipboard()
+    user.EmptyClipboard = lambda: 0
+    with pytest.raises(clip_mod.ClipboardError, match="could not be cleared") as info:
+        clip.set_text("dictated")
+    assert info.value.seq is None
+
+
+def test_a_busy_clipboard_keeps_another_apps_newer_copy(monkeypatch):
+    """review-m2 R2: busy usually means another app is writing. Its copy, made
+    while set_text waited, must not be overwritten with the older one."""
+    monkeypatch.setattr(clip_mod, "OPEN_WAIT", 0)
+    clip, user, kernel = fake_clipboard()
+    user.data = {clip_mod.CF_UNICODETEXT: "old\0".encode("utf-16-le")}
+    real_open, opens = user.OpenClipboard, []
+
+    def busy_open(hwnd):
+        opens.append(hwnd)
+        if len(opens) == 1:
+            return real_open(hwnd)  # save() gets in
+        if len(opens) == 2:  # the other app's write lands while we wait
+            user.data = {clip_mod.CF_UNICODETEXT: "new copy\0".encode("utf-16-le")}
+            user.seq += 2
+        return 0 if len(opens) <= 1 + clip_mod.OPEN_TRIES else real_open(hwnd)
+
+    user.OpenClipboard = busy_open
+    log = []
+    out = PasteOutput(clipboard=clip, keys=FakeKeys(log), sleep=lambda s: None)
+    with pytest.raises(clip_mod.ClipboardError, match="busy"):
+        out.emit("dictated")
+    assert log == [] and user.data == {clip_mod.CF_UNICODETEXT: "new copy\0".encode("utf-16-le")}
 
 
 def test_paste_end_to_end_keeps_theirs_when_our_text_is_refused():

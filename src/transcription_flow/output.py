@@ -14,6 +14,8 @@ type, but keep it that way at the source too).
 import logging
 import time
 
+from .clipboard import ClipboardError
+
 log = logging.getLogger(__name__)
 
 OUTPUT_MODES = {"type": "Type the text", "paste": "Paste, then restore the clipboard"}
@@ -83,20 +85,25 @@ class PasteOutput:
     def emit(self, text: str) -> None:
         clip = self._clipboard
         saved = clip.save()
-        before = clip.sequence()
-        ours = None
+        ours = None  # the sequence number once our write changed the clipboard
         try:
             ours = clip.set_text(text)
             self._keys.paste()
             self._sleep(self._settle)
+        except ClipboardError as err:
+            if ours is None:
+                # set_text failed: err.seq says if it changed the clipboard
+                # part way. A busy clipboard was never touched, and another
+                # app may have written to it meanwhile (review-m2 R2).
+                ours = err.seq
+            raise
         finally:
-            now = clip.sequence()
-            # Put theirs back if our text is still there, or if set_text
-            # failed part way (it changed the clipboard but returned nothing).
-            if now == ours or (ours is None and now != before):
-                clip.restore(saved)
-            elif ours is not None:  # someone copied something meanwhile: theirs wins
-                log.info("clipboard changed during the paste; not restored")
+            # Put theirs back only while the clipboard is as we left it.
+            if ours is not None:
+                if clip.sequence() == ours:
+                    clip.restore(saved)
+                else:  # someone copied something meanwhile: theirs wins
+                    log.info("clipboard changed during the paste; not restored")
 
 
 def make_output(mode: str, settle: float = PASTE_SETTLE_SECONDS):
