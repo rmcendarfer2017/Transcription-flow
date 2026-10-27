@@ -12,6 +12,7 @@ import queue
 import threading
 import traceback
 
+from .output import OutputWarning
 from .recorder import TARGET_RATE, MicrophoneError
 
 log = logging.getLogger(__name__)
@@ -209,6 +210,8 @@ class Controller:
                     output.emit(text)
                 else:
                     log.info("no speech detected")
+            except OutputWarning as warning:  # the text went out
+                self._error(warning)
             except Exception as err:
                 # Type and frames only: an exception's message (or a chained
                 # one's) may hold the transcript (review F7).

@@ -5,6 +5,7 @@ import pytest
 from helpers import flush_logs, tone, wait_for
 from transcription_flow import controller as controller_mod
 from transcription_flow.controller import Controller, State
+from transcription_flow.output import OutputWarning
 from transcription_flow.recorder import NoMicrophoneError, SilentMicrophoneError
 
 
@@ -256,6 +257,22 @@ def test_transcriber_failure_reports_and_recovers(parts):
     ctl.press()
     ctl.release()
     assert idle(ctl) and out.typed == ["hello"]
+
+
+def test_an_output_warning_is_reported_as_itself_not_as_a_failure(parts):
+    """review-m2 N2: the text was pasted; only the clipboard restore failed."""
+    ctl, rec, eng, out, ui, errors = parts
+
+    def emit(text):
+        out.typed.append(text)
+        raise OutputWarning("The text was pasted, but part of your clipboard ...")
+
+    out.emit = emit
+    ctl.press()
+    ctl.release()
+    assert idle(ctl)
+    assert out.typed == ["hello"]
+    assert errors == ["The text was pasted, but part of your clipboard ..."]
 
 
 def test_empty_text_types_nothing(parts):
