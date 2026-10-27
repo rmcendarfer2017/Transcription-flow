@@ -34,7 +34,7 @@ def child_command(model_dir: Path) -> list:
     args = ["--probe-gpu", "--model-dir", str(model_dir)]
     if getattr(sys, "frozen", False):  # PyInstaller exe
         return [sys.executable, *args]
-    return [sys.executable, "-m", "transcription_flow", *args]
+    return [sys.executable, "-P", "-m", "transcription_flow", *args]
 
 
 def _child_env() -> dict:

@@ -10,6 +10,7 @@ import enum
 import logging
 import queue
 import threading
+import traceback
 
 from .recorder import TARGET_RATE, MicrophoneError
 
@@ -48,6 +49,7 @@ class Controller:
         self._lock = threading.Lock()
         self._state = State.IDLE
         self._cap_timer = None
+        self._recording_id = 0  # the cap timer's token (review F8)
         self._jobs = queue.Queue()
         self._worker = None
 
@@ -82,7 +84,9 @@ class Controller:
             except MicrophoneError as err:
                 self._error(err)
                 return
-            self._cap_timer = self._timer(self._max_seconds, self._cap_hit)
+            self._recording_id += 1
+            rid = self._recording_id
+            self._cap_timer = self._timer(self._max_seconds, lambda: self._cap_hit(rid))
             self._set(State.RECORDING)
 
     def release(self) -> None:
@@ -96,9 +100,11 @@ class Controller:
             if self._cancel():
                 log.info("recording cancelled: another key was pressed")
 
-    def _cap_hit(self) -> None:
+    def _cap_hit(self, rid: int) -> None:
+        # Timer.cancel() can't stop a callback already waiting for the lock,
+        # so a stale cap must not end a newer recording.
         with self._lock:
-            if self._state is State.RECORDING:
+            if self._state is State.RECORDING and rid == self._recording_id:
                 log.info("recording reached the %.0f s cap", self._max_seconds)
                 self._finish("cap")
 
@@ -155,7 +161,10 @@ class Controller:
                 else:
                     log.info("no speech detected")
             except Exception as err:
-                log.exception("transcription or typing failed")
+                # Type and frames only: an exception's message (or a chained
+                # one's) may hold the transcript (review F7).
+                log.error("transcription or typing failed (%s)\n%s", type(err).__name__,
+                          "".join(traceback.format_tb(err.__traceback__)).rstrip())
                 self._on_error(f"Dictation failed: {type(err).__name__}. See the log for details.")
             finally:
                 with self._lock:

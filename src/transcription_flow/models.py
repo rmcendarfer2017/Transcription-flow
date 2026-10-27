@@ -85,22 +85,39 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
+class _NoDowngradeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but never from https to plain http (review F6)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.full_url.lower().startswith("https:") and not newurl.lower().startswith("https:"):
+            fp.close()
+            raise DownloadError("The download server redirected to an insecure address; "
+                                "the download was stopped.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
-    """Download url into part, resuming from part's current length."""
+    """Download url into part, resuming from part's current length. Reports
+    the bytes already on disk to on_bytes, and takes them back on a restart.
+    Never writes more than size bytes (review F1)."""
     have = part.stat().st_size if part.exists() else 0
     if have > size:
         part.unlink()
         have = 0
+    if have:
+        on_bytes(have)
     if have == size:
         return
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     if have:
         request.add_header("Range", f"bytes={have}-")
     try:
-        response = urllib.request.urlopen(request, timeout=timeout)
+        opener = urllib.request.build_opener(_NoDowngradeRedirect)  # per call: current TLS defaults
+        response = opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as err:
         if err.code == 416 and have:  # range not satisfiable: start over
             part.unlink()
+            on_bytes(-have)
             return _fetch(url, part, size, timeout, on_bytes)
         raise DownloadError(f"The download failed (HTTP {err.code}).") from None
     except (OSError, http.client.HTTPException) as err:  # URLError is an OSError
@@ -110,16 +127,23 @@ def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
             log.info("server ignored the range request; restarting %s", part.name)
             on_bytes(-have)
             have = 0
+        remaining = size - have
         try:
             with open(part, "ab" if have else "wb") as out:
-                while True:
-                    block = response.read(CHUNK)
+                while remaining:
+                    block = response.read(min(CHUNK, remaining))
                     if not block:
                         break
                     out.write(block)
+                    remaining -= len(block)
                     on_bytes(len(block))
+            too_long = not remaining and response.read(1)
         except (OSError, http.client.HTTPException) as err:
             raise DownloadError(f"The download was interrupted: {_reason(err)}.") from None
+    if too_long:
+        part.unlink()
+        raise DownloadError("The server sent more data than expected; the download was "
+                            "stopped. Please try again.")
 
 
 def _reason(err: Exception) -> str:
@@ -128,17 +152,19 @@ def _reason(err: Exception) -> str:
 
 
 def download(name: str, models_dir: Path, progress=None, base_url: str = DEFAULT_BASE_URL,
-             timeout: float = 30.0, manifest=None) -> Path:
+             timeout: float = 30.0, manifest=None, verify: bool = False) -> Path:
     """Download and verify a model; returns its folder.
 
     progress(done_bytes, total_bytes) is called as bytes arrive (also with the
     bytes already on disk). Partial files are kept as ``<name>.part`` so a
-    later call resumes them. Raises DownloadError or ChecksumError.
+    later call resumes them. verify=True re-hashes an installed model instead
+    of trusting its marker and sizes, and downloads any file that fails.
+    Raises DownloadError or ChecksumError.
     """
     manifest = manifest or load_manifest()
     spec = _spec(name, manifest)
     folder = model_path(name, models_dir)
-    if is_installed(name, models_dir, manifest):
+    if not verify and is_installed(name, models_dir, manifest):
         return folder
     folder.mkdir(parents=True, exist_ok=True)
     (folder / MARKER).unlink(missing_ok=True)
@@ -165,13 +191,13 @@ def download(name: str, models_dir: Path, progress=None, base_url: str = DEFAULT
 
     for f in spec["files"]:
         final = folder / f["name"]
-        if final.is_file() and final.stat().st_size == f["size"] and _sha256(final) == f["sha256"]:
-            on_bytes(f["size"])
-            continue
+        if final.is_file() and final.stat().st_size == f["size"]:
+            if _sha256(final) == f["sha256"]:
+                on_bytes(f["size"])
+                continue
+            log.info("%s/%s failed its checksum; downloading it again", name, f["name"])
         final.unlink(missing_ok=True)
         part = folder / (f["name"] + ".part")
-        if part.exists():
-            on_bytes(min(part.stat().st_size, f["size"]))
         url = f"{base_url.rstrip('/')}/{spec['repo']}/resolve/{spec['revision']}/{f['name']}"
         _fetch(url, part, f["size"], timeout, on_bytes)
         actual_size = part.stat().st_size if part.exists() else 0

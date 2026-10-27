@@ -34,8 +34,8 @@ jobs:
         with:
           path: .ci-models/tiny.en
           key: whisper-tiny.en-${{ hashFiles('src/transcription_flow/models_manifest.json') }}
-      - name: Download tiny.en with our downloader (checksums verified)
-        run: python -m transcription_flow --download-model --model tiny.en --models-dir .ci-models
+      - name: Download tiny.en with our downloader (checksums re-verified on a cache hit too)
+        run: python -m transcription_flow --verify --model tiny.en --models-dir .ci-models
         env:
           PYTHONPATH: src
       - name: Tests (the slow ones run --selftest on the real model, network blocked)

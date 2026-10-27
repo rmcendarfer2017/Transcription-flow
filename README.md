@@ -61,20 +61,28 @@ Command-line options (`venv\Scripts\python dictation.py --help`):
 | `--device auto` | use an NVIDIA GPU if the GPU probe passes (default `cpu`) |
 | `--keep-mic-warm` | keep the microphone open between dictations |
 | `--download-model` | download and verify `--model`, then exit |
+| `--verify` | re-check the SHA-256 of every installed model file (re-downloads any that fail), then exit |
 | `--selftest WAV` | transcribe a WAV file on the CPU and print JSON (no UI) |
 
-Models and logs live in `%LOCALAPPDATA%\TranscriptionFlow`.
+Models and logs live in `%LOCALAPPDATA%\TranscriptionFlow`. On start the app
+checks only that the model's files are there at the right sizes; run
+`--verify` if you think a model file is damaged.
 
 ## Run on startup (Windows)
 
-Create a shortcut in `shell:startup` targeting:
+Run the app once from a console first (`venv\Scripts\python dictation.py`):
+the first start downloads the `small.en` model, about 480 MB, and without a
+console window you would see no sign of it.
+
+Then create a shortcut in `shell:startup` whose target uses absolute paths,
+for example (if the project is in `C:\Tools\Transcription-flow`):
 
 ```
-venv\Scripts\pythonw.exe dictation.py
+C:\Tools\Transcription-flow\venv\Scripts\pythonw.exe C:\Tools\Transcription-flow\dictation.py
 ```
 
-with the working directory set to this project folder. `pythonw.exe` runs
-without a console window.
+with "Start in" set to the same project folder. `pythonw.exe` runs without a
+console window; messages then go to the log file only.
 
 ## For developers
 

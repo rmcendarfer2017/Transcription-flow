@@ -111,3 +111,20 @@ def test_setup_is_idempotent_and_rotates(tmp_path, monkeypatch):
     files = [h for h in ours if isinstance(h, logging.handlers.RotatingFileHandler)]
     assert len(files) == 1 and len(ours) == 2
     assert files[0].maxBytes == 1_000_000 and files[0].backupCount == 3
+
+
+def test_console_gets_one_line_and_the_file_gets_the_traceback(tmp_path, monkeypatch):
+    console = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", console)
+    path = logsetup.setup(tmp_path)
+    log = logging.getLogger("transcription_flow.test")
+    log.info("routine detail")
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        log.warning("The overlay could not start.", exc_info=True)
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert console.getvalue() == "[!] The overlay could not start.\n"  # QA B1
+    text = path.read_text("utf-8")
+    assert "routine detail" in text and "Traceback" in text and "RuntimeError: boom" in text

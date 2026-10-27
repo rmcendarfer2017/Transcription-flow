@@ -2,7 +2,10 @@ import hashlib
 import http.server
 import json
 import re
+import shutil
 import socket
+import ssl
+import subprocess
 import threading
 import time
 
@@ -28,7 +31,7 @@ def make_manifest(files=FILES, override_sha=None):
 class Server:
     """Local HTTP file server with Range support and fault switches."""
 
-    def __init__(self, files=FILES):
+    def __init__(self, files=FILES, tls=None):
         self.files = dict(files)
         self.requests = []  # (path, range header)
         self.ignore_range = False
@@ -36,6 +39,9 @@ class Server:
         self.cut_after = {}  # name -> bytes sent before the connection drops
         self.delay = 0.0
         self.user_agents = []
+        self.extra = {}  # name -> bytes sent after the body, with no Content-Length
+        self.reject_range = set()  # names answered 416 to any Range request
+        self.redirect = {}  # name -> absolute URL for a 302
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -51,12 +57,23 @@ class Server:
                     time.sleep(server.delay)
                 m = re.fullmatch(rf"/{REPO}/resolve/{REV}/(.+)", self.path)
                 name = m.group(1) if m else None
+                if name in server.redirect:
+                    self.send_response(302)
+                    self.send_header("Location", server.redirect.pop(name))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if name not in server.files or name in server.missing:
                     self.send_error(404)
                     return
                 data = server.files[name]
                 start = 0
                 rng = self.headers.get("Range")
+                if rng and name in server.reject_range:
+                    self.send_response(416)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if rng and not server.ignore_range:
                     start = int(re.fullmatch(r"bytes=(\d+)-", rng).group(1))
                     if start >= len(data):
@@ -69,6 +86,11 @@ class Server:
                 else:
                     self.send_response(200)
                 body = data[start:]
+                if name in server.extra:  # a stream that runs past the file's end
+                    self.close_connection = True
+                    self.end_headers()
+                    self.wfile.write(body + server.extra[name])
+                    return
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 cut = server.cut_after.pop(name, None)
@@ -81,7 +103,11 @@ class Server:
                 self.wfile.write(body)
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        scheme = "http"
+        if tls:
+            scheme = "https"
+            self.httpd.socket = tls.wrap_socket(self.httpd.socket, server_side=True)
+        self.url = f"{scheme}://127.0.0.1:{self.httpd.server_address[1]}"
         self.thread = threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True)
         self.thread.start()
 
@@ -155,12 +181,86 @@ def test_part_file_already_complete_is_verified_without_a_new_request(tmp_path, 
     assert (folder / "model.bin").read_bytes() == FILES["model.bin"]
 
 
+TOTAL = sum(len(d) for d in FILES.values())
+
+
 def test_oversized_part_file_is_discarded(tmp_path, server):
     folder = tmp_path / "models" / "fake"
     folder.mkdir(parents=True)
     (folder / "model.bin.part").write_bytes(FILES["model.bin"] + b"junk")
-    fetch(tmp_path, server)
+    seen = []
+    fetch(tmp_path, server, progress=lambda d, t: seen.append(d))
     assert (folder / "model.bin").read_bytes() == FILES["model.bin"]
+    assert max(seen) == seen[-1] == TOTAL  # the junk part never counts (review F5)
+
+
+def test_range_not_satisfiable_restarts_and_progress_stays_true(tmp_path, server):
+    server.reject_range.add("model.bin")
+    folder = tmp_path / "models" / "fake"
+    folder.mkdir(parents=True)
+    (folder / "model.bin.part").write_bytes(FILES["model.bin"][:1000])
+    seen = []
+    fetch(tmp_path, server, progress=lambda d, t: seen.append(d))
+    assert (folder / "model.bin").read_bytes() == FILES["model.bin"]
+    tries = [r for p, r in server.requests if p.endswith("/model.bin")]
+    assert tries == ["bytes=1000-", None]  # the 416, then a fresh start
+    assert max(seen) == seen[-1] == TOTAL
+
+
+def test_stream_longer_than_the_manifest_size_is_cut_off(tmp_path, server):
+    server.extra["model.bin"] = b"x" * (1 << 20)  # size + 1 MB, no Content-Length
+    seen = []
+    with pytest.raises(models.DownloadError, match="more data than expected"):
+        fetch(tmp_path, server, progress=lambda d, t: seen.append(d))
+    folder = tmp_path / "models" / "fake"
+    assert not (folder / "model.bin.part").exists() and not (folder / "model.bin").exists()
+    assert max(seen) <= TOTAL  # never wrote or counted past the file's size
+    assert not models.is_installed("fake", tmp_path / "models", make_manifest())
+
+
+def test_stream_of_the_right_size_without_content_length_installs(tmp_path, server):
+    server.extra["model.bin"] = b""  # read-until-close body, exactly the right size
+    fetch(tmp_path, server)
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
+
+
+def test_redirect_to_http_is_followed_from_http(tmp_path, server):
+    server.redirect["config.json"] = f"{server.url}/{REPO}/resolve/{REV}/config.json"
+    fetch(tmp_path, server)
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
+
+
+@pytest.fixture
+def tls_server(tmp_path, monkeypatch):
+    """An https server with a throwaway self-signed certificate that the
+    default client context trusts for this test only."""
+    if not shutil.which("openssl"):
+        pytest.skip("openssl is needed to make a test certificate")
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                    "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=test",
+                    "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", str(key),
+                    "-out", str(cert)], check=True, capture_output=True, timeout=60)
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cert, key)
+    monkeypatch.setattr(ssl, "_create_default_https_context",
+                        lambda: ssl.create_default_context(cafile=str(cert)))
+    srv = Server(tls=server_ctx)
+    yield srv
+    srv.close()
+
+
+def test_https_redirect_to_https_is_followed(tmp_path, tls_server):
+    tls_server.redirect["config.json"] = f"{tls_server.url}/{REPO}/resolve/{REV}/config.json"
+    fetch(tmp_path, tls_server)
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
+
+
+def test_https_redirect_to_plain_http_is_refused(tmp_path, tls_server, server):
+    tls_server.redirect["config.json"] = f"{server.url}/{REPO}/resolve/{REV}/config.json"
+    with pytest.raises(models.DownloadError, match="insecure"):
+        fetch(tmp_path, tls_server)
+    assert server.requests == []  # the plain-http copy was never asked for
 
 
 def test_checksum_mismatch_is_rejected_and_deleted(tmp_path, server):
@@ -174,8 +274,9 @@ def test_checksum_mismatch_is_rejected_and_deleted(tmp_path, server):
 
 def test_wrong_size_from_server_is_rejected(tmp_path, server):
     server.files["model.bin"] = FILES["model.bin"] + b"x"
-    with pytest.raises(models.ChecksumError):
+    with pytest.raises(models.DownloadError, match="more data than expected"):
         fetch(tmp_path, server)
+    assert not (tmp_path / "models" / "fake" / "model.bin").exists()
 
 
 def test_404_gives_a_download_error(tmp_path, server):
@@ -266,6 +367,27 @@ def test_corrupt_complete_file_is_downloaded_again(tmp_path, server):
     fetch(tmp_path, server)
     assert (folder / "config.json").read_bytes() == FILES["config.json"]
     assert [p.rsplit("/", 1)[1] for p, _ in server.requests] == ["config.json"]
+
+
+def test_verify_rehashes_an_installed_model_and_repairs_it(tmp_path, server):
+    folder = fetch(tmp_path, server)
+    (folder / "config.json").write_bytes(b'{"a": 2}')  # same size: is_installed still says yes
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
+    server.requests.clear()
+    fetch(tmp_path, server)
+    assert server.requests == [] and (folder / "config.json").read_bytes() == b'{"a": 2}'
+    fetch(tmp_path, server, verify=True)
+    assert (folder / "config.json").read_bytes() == FILES["config.json"]
+    assert [p.rsplit("/", 1)[1] for p, _ in server.requests] == ["config.json"]
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
+
+
+def test_verify_of_a_good_model_makes_no_requests(tmp_path, server):
+    fetch(tmp_path, server)
+    server.requests.clear()
+    fetch(tmp_path, server, verify=True)
+    assert server.requests == []
+    assert models.is_installed("fake", tmp_path / "models", make_manifest())
 
 
 def test_unknown_model_name(tmp_path):

@@ -41,6 +41,13 @@ class _LogStream:
         return False
 
 
+class _ConsoleFormatter(logging.Formatter):
+    """One line per problem on the console; tracebacks go to the file only."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return f"[!] {record.getMessage()}"
+
+
 def setup(log_dir: Path, level: int = logging.INFO) -> Path:
     """Configure the root logger once; returns the log file path."""
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -64,7 +71,8 @@ def setup(log_dir: Path, level: int = logging.INFO) -> Path:
         sys.stderr = _LogStream(stdio, logging.WARNING)
     elif not isinstance(sys.stderr, _LogStream):
         console = logging.StreamHandler(sys.stderr)
-        console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        console.setLevel(logging.WARNING)
+        console.setFormatter(_ConsoleFormatter())
         console._tflow = True
         root.addHandler(console)
 

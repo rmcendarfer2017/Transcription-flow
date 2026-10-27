@@ -12,15 +12,21 @@ from . import __version__
 log = logging.getLogger("transcription_flow")
 
 EXIT_OK, EXIT_FAIL, EXIT_SETUP, EXIT_ALREADY_RUNNING = 0, 1, 2, 3
+EXIT_INTERRUPTED = 130
+
+
+class _Cancelled(Exception):
+    """Ctrl-C, already reported to the user."""
 
 
 def _parser() -> argparse.ArgumentParser:
-    from .models import DEFAULT_MODEL
+    from .models import DEFAULT_MODEL, load_manifest
 
     p = argparse.ArgumentParser(prog="transcription-flow",
                                 description="Local push-to-talk dictation.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    p.add_argument("--model", default=DEFAULT_MODEL, help="model name (default: %(default)s)")
+    p.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(load_manifest()["models"]),
+                   help="model name (default: %(default)s)")
     p.add_argument("--models-dir", type=Path, help="folder that holds downloaded models")
     p.add_argument("--model-dir", type=Path,
                    help="use this model folder as is (skips the manifest check and download)")
@@ -30,6 +36,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="keep the microphone open between dictations (adds pre-roll)")
     p.add_argument("--download-model", action="store_true",
                    help="download and verify --model, then exit")
+    p.add_argument("--verify", action="store_true",
+                   help="like --download-model, but re-check the checksums of every "
+                        "installed file first (re-downloads any that fail)")
     p.add_argument("--selftest", type=Path, metavar="WAV",
                    help="transcribe WAV on CPU, print JSON, exit 0 (ok) or 1")
     p.add_argument("--expect", help="with --selftest: text the transcript must contain")
@@ -37,30 +46,44 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _console_progress(name: str):
-    last = -1
+class _ConsoleProgress:
+    """A one-line progress display; end_line() closes an unfinished line so
+    the next message starts on its own line (QA B2)."""
 
-    def progress(done: int, total: int) -> None:
-        nonlocal last
+    def __init__(self, name: str):
+        self._name = name
+        self._last = -1
+        self._open = False
+
+    def __call__(self, done: int, total: int) -> None:
         pct = int(done * 100 / total) if total else 100
-        if pct != last and sys.stderr is not None:
-            last = pct
-            end = "\n" if done >= total else ""
-            print(f"\rDownloading {name}: {pct:3d}% ({done >> 20} of {total >> 20} MB)",
-                  end=end, file=sys.stderr, flush=True)
+        if pct != self._last and sys.stderr is not None:
+            self._last = pct
+            self._open = done < total
+            print(f"\rDownloading {self._name}: {pct:3d}% ({done >> 20} of {total >> 20} MB)",
+                  end="" if self._open else "\n", file=sys.stderr, flush=True)
 
-    return progress
+    def end_line(self) -> None:
+        if self._open and sys.stderr is not None:
+            print(file=sys.stderr, flush=True)
+        self._open = False
 
 
-def _download(name: str, models_dir: Path):
+def _download(name: str, models_dir: Path, verify: bool = False):
     """Download with a console progress line; returns the folder or None."""
     from . import models
 
+    progress = _ConsoleProgress(name)
     try:
-        return models.download(name, models_dir, progress=_console_progress(name))
+        return models.download(name, models_dir, progress=progress, verify=verify)
     except models.ModelError as err:
+        progress.end_line()
         _notify(f"Model download failed: {err}")
         return None
+    except KeyboardInterrupt:
+        progress.end_line()
+        _notify("Download cancelled. Run it again to resume.")
+        raise _Cancelled from None
 
 
 def _selftest(wav: Path, model_dir: Path, expect) -> int:
@@ -77,10 +100,10 @@ def _selftest(wav: Path, model_dir: Path, expect) -> int:
     return EXIT_OK if report["ok"] else EXIT_FAIL
 
 
-def _notify(message: str) -> None:
-    """User-facing problem. M1: stderr and the log; M2 adds tray toasts."""
-    if sys.stderr is not None:
-        print(f"[!] {message}", file=sys.stderr, flush=True)
+def _notify(message: str, exc_info: bool = False) -> None:
+    """User-facing problem: the console (one line) and the log file, which
+    also gets the traceback. M2 adds tray toasts."""
+    log.warning(message, exc_info=exc_info)
 
 
 def run_app(args, model_dir: Path, models_dir: Path) -> int:
@@ -97,7 +120,6 @@ def run_app(args, model_dir: Path, models_dir: Path) -> int:
             print(f"First run: downloading the {args.model} model (one time only).",
                   file=sys.stderr)
             if _download(args.model, models_dir) is None:
-                log.error("model download failed")
                 return EXIT_SETUP
         return _run_dictation(args, model_dir, log_file)
     finally:
@@ -116,8 +138,8 @@ def _run_dictation(args, model_dir, log_file) -> int:
     try:
         engine = WhisperEngine(model_dir, device=device).load()
     except Exception as err:
-        log.exception("model load failed")
-        _notify(f"The speech model could not be loaded ({type(err).__name__}). Log: {log_file}")
+        _notify(f"The speech model could not be loaded ({type(err).__name__}). Log: {log_file}",
+                exc_info=True)
         return EXIT_SETUP
 
     recorder = Recorder(keep_warm=args.keep_mic_warm)
@@ -133,8 +155,8 @@ def _run_dictation(args, model_dir, log_file) -> int:
 
         overlay = Overlay(recorder.levels)
     except Exception as err:
-        log.exception("overlay failed")
-        _notify(f"The on-screen indicator could not start ({type(err).__name__}).")
+        _notify(f"The on-screen indicator could not start ({type(err).__name__}).",
+                exc_info=True)
         return EXIT_SETUP
 
     controller = Controller(recorder, engine, KeyboardTyper(), ui=overlay.post, on_error=_notify)
@@ -160,7 +182,18 @@ def _run_dictation(args, model_dir, log_file) -> int:
 
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
-    from . import models, paths
+    try:
+        return _main(args)
+    except _Cancelled:
+        return EXIT_INTERRUPTED
+    except KeyboardInterrupt:
+        if sys.stderr is not None:  # logging may not be set up yet
+            print("\n[!] Cancelled.", file=sys.stderr, flush=True)
+        return EXIT_INTERRUPTED
+
+
+def _main(args) -> int:
+    from . import logsetup, models, paths
 
     models_dir = args.models_dir or paths.models_dir()
     model_dir = args.model_dir or models.model_path(args.model, models_dir)
@@ -170,8 +203,9 @@ def main(argv=None) -> int:
         return gpu_probe.run_child(model_dir)
     if args.selftest:
         return _selftest(args.selftest, model_dir, args.expect)
-    if args.download_model:
-        folder = _download(args.model, models_dir)
+    if args.download_model or args.verify:
+        logsetup.setup(paths.logs_dir())
+        folder = _download(args.model, models_dir, verify=args.verify)
         if folder is None:
             return EXIT_SETUP
         print(folder)

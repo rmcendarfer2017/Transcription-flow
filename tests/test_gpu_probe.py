@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 
 import pytest
@@ -55,8 +56,8 @@ def test_child_importing_the_package_gets_the_privacy_env(monkeypatch):
 def test_child_command_runs_the_package(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     cmd = gpu_probe.child_command("models/x")
-    assert cmd[:3] == [sys.executable, "-m", "transcription_flow"]
-    assert cmd[3:] == ["--probe-gpu", "--model-dir", "models/x"]
+    assert cmd[:4] == [sys.executable, "-P", "-m", "transcription_flow"]  # -P: no cwd on path
+    assert cmd[4:] == ["--probe-gpu", "--model-dir", "models/x"]
 
 
 def test_child_command_frozen_runs_the_exe(monkeypatch):
@@ -119,3 +120,13 @@ def test_real_probe_child_answers_cleanly(tmp_path):
     CI runners and the dev box have no NVIDIA GPU, so the answer is 'no CUDA device'."""
     result = probe(gpu_probe.child_command(tmp_path / "no-model"), timeout=120)
     assert result.ok or result.reason == "no CUDA device", result
+
+
+@pytest.mark.slow
+def test_probe_child_ignores_modules_in_the_working_directory(tmp_path):
+    """-P: a stray json.py in the folder the app was started from must not be imported."""
+    (tmp_path / "json.py").write_text("import sys\nprint('SHADOWED')\nsys.exit(99)\n")
+    done = subprocess.run(gpu_probe.child_command(tmp_path / "no-model"), cwd=tmp_path,
+                          capture_output=True, text=True, timeout=120,
+                          env=gpu_probe._child_env(), stdin=subprocess.DEVNULL)
+    assert "SHADOWED" not in done.stdout and done.returncode != 99, done.stderr[-2000:]

@@ -271,3 +271,50 @@ def test_default_timer_fires_the_cap():
     finally:
         ctl.shutdown(timeout=5)
 
+
+
+def test_stale_cap_callback_does_not_end_the_next_recording(parts, timers):
+    """Timer.cancel() can't stop a callback already waiting for the lock (review F8)."""
+    ctl, rec, eng, out, ui, errors = parts
+    ctl.press()
+    ctl.release()
+    assert idle(ctl)
+    ctl.press()
+    timers.timers[0].callback()  # the first recording's cap, arriving late
+    assert ctl.state is State.RECORDING
+    timers.timers[1].fire()  # the current recording's own cap still works
+    assert idle(ctl) and len(out.typed) == 2
+
+
+class RaisingOutput:
+    def emit(self, text):
+        try:
+            raise ValueError(f"inner {text}")
+        except ValueError:
+            raise RuntimeError(f"could not type {text!r}")  # chained: both carry the text
+
+
+def test_transcript_never_reaches_the_log_even_in_an_error(timers, caplog, tmp_path):
+    """Canary (review F7): an output backend that raises with the text in its message."""
+    import logging
+
+    from transcription_flow import logsetup
+
+    log_file = logsetup.setup(tmp_path / "logs", level=logging.DEBUG)
+    caplog.set_level(logging.DEBUG)
+    errors = []
+    ctl = Controller(FakeRecorder(), FakeTranscriber(["CANARY-TEXT"]), RaisingOutput(),
+                     on_error=errors.append, timer=timers)
+    ctl.start()
+    try:
+        ctl.press()
+        ctl.release()
+        assert idle(ctl) and errors
+    finally:
+        ctl.shutdown(timeout=5)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)  # it was logged
+    assert "CANARY" not in caplog.text
+    assert "CANARY" not in log_file.read_text("utf-8")
+    assert not any("CANARY" in e for e in errors)
