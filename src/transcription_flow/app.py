@@ -12,10 +12,13 @@ import os
 import sys
 
 from . import config as config_mod
-from .hotkey import HOTKEYS
+from .hotkey import HOTKEYS, MISSED_RELEASE
 from .output import make_output
 
 log = logging.getLogger(__name__)
+
+MISSED_RELEASE_TOAST = ("Recording cancelled: the key release was missed, so nothing was "
+                        "typed. Hold the key again to dictate.")
 
 
 def open_folder(path) -> None:
@@ -89,6 +92,12 @@ class App:
         self._error = None
         self._refresh()
 
+    def cancel_recording(self, reason: str) -> None:
+        """Hotkey thread: drop the recording. A missed key release is never
+        silent: the user gets a toast (review-m2 F3)."""
+        if self._controller.cancel(reason) and reason == MISSED_RELEASE:
+            self._ui_call(lambda: self._tray.notify(MISSED_RELEASE_TOAST))
+
     # -- tray actions (tray thread: hand everything to Tk) ---------------
     def tray_actions(self):
         from .ui.tray import TrayActions
@@ -100,7 +109,9 @@ class App:
 
     # -- Tk thread -------------------------------------------------------
     def toggle_pause(self) -> None:
-        self._controller.set_paused(not self._controller.paused)
+        paused = not self._controller.paused
+        self._controller.set_paused(paused)
+        self._hotkey.set_paused(paused)  # suppressed keys work again while paused
         self._error = None
         self._refresh()
 
@@ -122,7 +133,7 @@ class App:
         self._settings = None
 
     def apply_settings(self, form) -> None:
-        new = form.to_config()
+        new = form.to_config(self.config)
         old = self.config
         if new.hotkey != old.hotkey and not self._set_hotkey(new.hotkey):
             new = dataclasses.replace(new, hotkey=old.hotkey)

@@ -25,14 +25,12 @@ def test_settings_window_round_trip(root):
     from transcription_flow.ui.settings import Form, SettingsWindow
 
     saved, closed = [], []
-    form = Form("right_alt", "base.en", "en", "paste", True, False)
+    form = Form("caps_lock", "base.en", "en", "paste", True, False)
     win = SettingsWindow(root, form, True, saved.append, lambda: closed.append(True))
     root.update()
     assert win.form() == form
-    assert "AltGr" in win.hotkey_note.cget("text")
     assert "disabled" in win.language.state()  # .en models: English only
     win.hotkey.set("F9")
-    win._update_notes()
     win.autostart.set(True)
     win.save()
     assert saved == [Form("f9", "base.en", "en", "paste", True, True)]

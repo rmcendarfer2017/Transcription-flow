@@ -33,12 +33,14 @@ class Form:
         return cls(config.hotkey, config.model, config.language, config.output,
                    config.keep_mic_warm, start_with_windows)
 
-    def to_config(self) -> Config:
+    def to_config(self, base: Config = None) -> Config:
+        """``base`` keeps the settings the form doesn't show (file-only ones)."""
         language = self.language
         if language not in languages_for(self.model):
             language = next(iter(languages_for(self.model)))
-        return Config(hotkey=self.hotkey, model=self.model, language=language,
-                      output=self.output, keep_mic_warm=self.keep_mic_warm)
+        return dataclasses.replace(base or Config(), hotkey=self.hotkey, model=self.model,
+                                   language=language, output=self.output,
+                                   keep_mic_warm=self.keep_mic_warm)
 
 
 def model_choices() -> dict:
@@ -78,9 +80,6 @@ class SettingsWindow:
         frame.columnconfigure(1, weight=1)
 
         self.hotkey = self._combo(frame, 0, "Hold to dictate", self._hotkeys, form.hotkey)
-        self.hotkey_note = ttk.Label(frame, wraplength=320, foreground="#8a5a00")
-        self.hotkey_note.grid(row=1, column=1, sticky="w", pady=(0, 8))
-        self.hotkey.bind("<<ComboboxSelected>>", lambda e: self._update_notes())
         self.model = self._combo(frame, 2, "Speech model", self._models, form.model)
         self.model.bind("<<ComboboxSelected>>", lambda e: self._update_languages())
         self._languages = languages_for(form.model)
@@ -106,7 +105,6 @@ class SettingsWindow:
         ttk.Button(buttons, text="Save", command=self.save, default="active").grid(row=0,
                                                                                     column=1)
         win.bind("<Escape>", lambda e: self.close())
-        self._update_notes()
         self._update_languages()
         win.lift()
         win.focus_force()
@@ -125,9 +123,6 @@ class SettingsWindow:
     def _key(combo, choices: dict):
         label = combo.get()
         return next(key for key, text in choices.items() if text == label)
-
-    def _update_notes(self) -> None:
-        self.hotkey_note.configure(text=HOTKEYS[self._key(self.hotkey, self._hotkeys)].note)
 
     def _update_languages(self) -> None:
         current = self._key(self.language, self._languages)

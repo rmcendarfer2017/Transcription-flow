@@ -47,8 +47,9 @@ transcription is typed at the current cursor position.
 - Pressing any other key while the hotkey is held (for example Right Ctrl+C)
   cancels the recording, so shortcuts don't turn into dictation.
 - If the key's release is missed (focus moved to an admin window, the UAC
-  prompt or the lock screen), the recording is cancelled after about 1.5 s,
-  never typed into whatever has focus then.
+  prompt or the lock screen), the recording is cancelled after about 1.5 s
+  (longer if your keyboard repeat delay or Filter Keys asks for it), never
+  typed into whatever has focus then, and a notification says so.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
 - The microphone is opened only while you hold the hotkey, so Windows doesn't
@@ -66,14 +67,18 @@ transcription is typed at the current cursor position.
 The pill icon in the notification area shows the status (Ready, Paused or
 the last problem, such as a blocked microphone) and has **Pause dictation**,
 **Settings...**, **Open log folder** and **Quit**. Problems also show as a
-Windows notification.
+Windows notification. While dictation is paused, the hotkey works as a normal
+key again (Caps Lock toggles, F12 opens developer tools).
 
 ### Settings
 
-- **Hold to dictate:** Right Ctrl (default), Right Alt, Right Shift,
-  Caps Lock, Scroll Lock or F8-F12. Caps Lock, Scroll Lock and the F keys
-  no longer reach other apps while they are the hotkey. On many European
-  keyboard layouts Right Alt is AltGr, so pick another key there.
+- **Hold to dictate:** Right Ctrl (default), Caps Lock, Scroll Lock or
+  F8-F12. Caps Lock, Scroll Lock and the F keys no longer reach other apps
+  while they are the hotkey (unless dictation is paused). Right Alt is not
+  offered: on many European keyboard layouts it is AltGr, which types
+  characters such as @ and €, and on a US layout releasing it opens the
+  app's menu bar. Right Shift is not offered either: holding it for 8
+  seconds opens the Windows Filter Keys dialog.
 - **Speech model:** tiny.en, base.en or small.en (recommended). The English
   models (`.en`) need no language setting.
 - **Output:** type the text (default), or paste it and restore the
@@ -83,8 +88,15 @@ Windows notification.
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin rights).
 
 A new model is used the next time the app starts. Settings are saved in
-`%APPDATA%\TranscriptionFlow\config.json`; a damaged file is kept as
-`config.json.bad` and the defaults are used.
+`%APPDATA%\TranscriptionFlow\config.json` (UTF-8); a damaged file, or one
+saved in another encoding, is kept as `config.json.bad` and the defaults are
+used. One setting is in the file only: `paste_settle_seconds` (default 0.75,
+0.1 to 5) is how long an app gets to read the pasted text before your
+clipboard is put back. Raise it if paste mode sometimes pastes your old
+clipboard (busy apps or Remote Desktop); it is read when the app starts.
+
+If you turned the app off in Task Manager's Startup tab, Settings shows
+"Start with Windows" unticked; ticking it and saving turns it back on.
 
 Command-line options (`venv\Scripts\python dictation.py --help`):
 

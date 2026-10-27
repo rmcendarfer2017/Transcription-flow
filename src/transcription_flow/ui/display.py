@@ -10,26 +10,33 @@ import ctypes
 import sys
 
 PROCESS_SYSTEM_DPI_AWARE = 1
+E_ACCESSDENIED = 0x80070005
 SPI_GETWORKAREA = 0x0030
 PILL_MARGIN = 24  # pixels above the bottom of the work area, at 100%
 
 
 def enable_dpi_awareness(windll=None) -> str:
-    """Call before the first window is created. Returns what worked."""
+    """Call before the first window is created. Returns what happened, for
+    the log (review-m2 F10): SetProcessDpiAwareness reports failure as an
+    HRESULT, not an exception."""
     if windll is None:
         if sys.platform != "win32":
             return "not windows"
         windll = ctypes.windll
     try:
-        windll.shcore.SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE)  # Windows 8.1+
+        hr = windll.shcore.SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE) & 0xFFFFFFFF
+    except (AttributeError, OSError):  # before Windows 8.1
+        hr = None
+    if hr is not None and not hr & 0x80000000:  # SUCCEEDED(hr)
         return "system"
-    except (AttributeError, OSError):
-        pass
+    if hr == E_ACCESSDENIED:  # set already, by a manifest or an earlier call
+        return "already set (HRESULT 0x80070005)"
+    shcore = "" if hr is None else f" after HRESULT 0x{hr:08X}"
     try:
-        windll.user32.SetProcessDPIAware()  # Vista+
-        return "legacy"
+        ok = windll.user32.SetProcessDPIAware()  # Vista+
     except (AttributeError, OSError):
-        return "unaware"
+        ok = False
+    return f"legacy{shcore}" if ok else f"unaware{shcore}"
 
 
 def work_area(windll=None):

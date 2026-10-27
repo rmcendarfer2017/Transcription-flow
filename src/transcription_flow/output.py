@@ -18,7 +18,11 @@ log = logging.getLogger(__name__)
 
 OUTPUT_MODES = {"type": "Type the text", "paste": "Paste, then restore the clipboard"}
 DEFAULT_OUTPUT = "type"
-PASTE_SETTLE_SECONDS = 0.4  # time for the app to read the clipboard after Ctrl+V
+# Time the app gets to read the clipboard after Ctrl+V before the user's
+# contents go back. Apps under load (Teams, Word, Remote Desktop) can read it
+# late and would then paste the old contents (review-m2 F7), so this is
+# generous; config.json can change it (paste_settle_seconds).
+PASTE_SETTLE_SECONDS = 0.75
 VK_V = 0x56  # by key code, so Ctrl+V works on any keyboard layout
 
 
@@ -79,17 +83,21 @@ class PasteOutput:
     def emit(self, text: str) -> None:
         clip = self._clipboard
         saved = clip.save()
-        ours = clip.set_text(text)
+        before = clip.sequence()
+        ours = None
         try:
+            ours = clip.set_text(text)
             self._keys.paste()
             self._sleep(self._settle)
         finally:
-            # Someone copied something in the meantime: theirs wins.
-            if clip.sequence() == ours:
+            now = clip.sequence()
+            # Put theirs back if our text is still there, or if set_text
+            # failed part way (it changed the clipboard but returned nothing).
+            if now == ours or (ours is None and now != before):
                 clip.restore(saved)
-            else:
+            elif ours is not None:  # someone copied something meanwhile: theirs wins
                 log.info("clipboard changed during the paste; not restored")
 
 
-def make_output(mode: str):
-    return PasteOutput() if mode == "paste" else TypeOutput()
+def make_output(mode: str, settle: float = PASTE_SETTLE_SECONDS):
+    return PasteOutput(settle=settle) if mode == "paste" else TypeOutput()

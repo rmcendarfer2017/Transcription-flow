@@ -2,6 +2,7 @@
 __init__ has already applied the privacy environment (_env)."""
 
 import argparse
+import functools
 import json
 import logging
 import sys
@@ -170,7 +171,7 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
     except MicrophoneError as err:  # the recorder logged it; keep running
         startup_errors.append(str(err))
 
-    display.enable_dpi_awareness()  # before the first window
+    log.info("DPI awareness: %s", display.enable_dpi_awareness())  # before the first window
     try:
         from .ui.overlay import Overlay
         from .ui.settings import SettingsWindow
@@ -195,13 +196,16 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         if app is not None:
             app.on_state(state)
 
-    controller = Controller(recorder, engine, make_output(settings.output), ui=on_state,
+    # The settle is a file-only setting, read at start.
+    output_factory = functools.partial(make_output, settle=settings.paste_settle_seconds)
+    controller = Controller(recorder, engine, output_factory(settings.output), ui=on_state,
                             on_error=report)
     controller.start()
     app = App(settings, paths.config_file(), controller,
-              Hotkey(controller.press, controller.release, controller.cancel), Tray,
-              autostart.RunKey(), ui_call=overlay.call, stop_ui=overlay.quit,
+              Hotkey(controller.press, controller.release, lambda r: app.cancel_recording(r)),
+              Tray, autostart.RunKey(), ui_call=overlay.call, stop_ui=overlay.quit,
               settings_factory=lambda *a: SettingsWindow(overlay.root, *a),
+              output_factory=output_factory,
               launch_command=autostart.launch_command, log_dir=paths.logs_dir(), device=device)
     try:
         app.start()

@@ -5,8 +5,14 @@ file lists, app formats), so ``restore()`` can put the user's clipboard back
 as it was. GDI handle formats (CF_BITMAP and friends) are skipped: Windows
 makes them again from the DIB.
 
-Our text and the restored copy carry the formats that tell Windows not to
-keep them in clipboard history or sync them to the cloud clipboard.
+Our text carries the formats that tell Windows not to keep it in clipboard
+history or sync it to the cloud clipboard. They go on the clipboard before
+the text, in the same open, so a failure part way never leaves the text
+there without them (review-m2 F2). ``restore()`` puts the user's contents
+back exactly as saved, with no markers of ours (QA B5).
+
+``user32`` and ``kernel32`` can be passed in, so the logic is tested on any
+platform with a fake clipboard API.
 """
 
 import ctypes
@@ -34,38 +40,44 @@ def _skip(fmt: int) -> bool:
     return fmt in _HANDLE_FORMATS or fmt in _PRIVATE_RANGE
 
 
-class WindowsClipboard:
-    def __init__(self):
-        from ctypes import wintypes
+def _load_api():
+    from ctypes import wintypes
 
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        for name, res, args in [
-            ("OpenClipboard", wintypes.BOOL, [wintypes.HWND]),
-            ("CloseClipboard", wintypes.BOOL, []),
-            ("EmptyClipboard", wintypes.BOOL, []),
-            ("EnumClipboardFormats", wintypes.UINT, [wintypes.UINT]),
-            ("GetClipboardData", wintypes.HANDLE, [wintypes.UINT]),
-            ("SetClipboardData", wintypes.HANDLE, [wintypes.UINT, wintypes.HANDLE]),
-            ("GetClipboardSequenceNumber", wintypes.DWORD, []),
-            ("RegisterClipboardFormatW", wintypes.UINT, [wintypes.LPCWSTR]),
-            ("CreateWindowExW", wintypes.HWND,
-             [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
-              ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
-              wintypes.HINSTANCE, wintypes.LPVOID]),
-            ("DestroyWindow", wintypes.BOOL, [wintypes.HWND]),
-        ]:
-            fn = getattr(user32, name)
-            fn.restype, fn.argtypes = res, args
-        for name, res, args in [
-            ("GlobalAlloc", wintypes.HGLOBAL, [wintypes.UINT, ctypes.c_size_t]),
-            ("GlobalFree", wintypes.HGLOBAL, [wintypes.HGLOBAL]),
-            ("GlobalLock", wintypes.LPVOID, [wintypes.HGLOBAL]),
-            ("GlobalUnlock", wintypes.BOOL, [wintypes.HGLOBAL]),
-            ("GlobalSize", ctypes.c_size_t, [wintypes.HGLOBAL]),
-        ]:
-            fn = getattr(kernel32, name)
-            fn.restype, fn.argtypes = res, args
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    for name, res, args in [
+        ("OpenClipboard", wintypes.BOOL, [wintypes.HWND]),
+        ("CloseClipboard", wintypes.BOOL, []),
+        ("EmptyClipboard", wintypes.BOOL, []),
+        ("EnumClipboardFormats", wintypes.UINT, [wintypes.UINT]),
+        ("GetClipboardData", wintypes.HANDLE, [wintypes.UINT]),
+        ("SetClipboardData", wintypes.HANDLE, [wintypes.UINT, wintypes.HANDLE]),
+        ("GetClipboardSequenceNumber", wintypes.DWORD, []),
+        ("RegisterClipboardFormatW", wintypes.UINT, [wintypes.LPCWSTR]),
+        ("CreateWindowExW", wintypes.HWND,
+         [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
+          ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+          wintypes.HINSTANCE, wintypes.LPVOID]),
+        ("DestroyWindow", wintypes.BOOL, [wintypes.HWND]),
+    ]:
+        fn = getattr(user32, name)
+        fn.restype, fn.argtypes = res, args
+    for name, res, args in [
+        ("GlobalAlloc", wintypes.HGLOBAL, [wintypes.UINT, ctypes.c_size_t]),
+        ("GlobalFree", wintypes.HGLOBAL, [wintypes.HGLOBAL]),
+        ("GlobalLock", wintypes.LPVOID, [wintypes.HGLOBAL]),
+        ("GlobalUnlock", wintypes.BOOL, [wintypes.HGLOBAL]),
+        ("GlobalSize", ctypes.c_size_t, [wintypes.HGLOBAL]),
+    ]:
+        fn = getattr(kernel32, name)
+        fn.restype, fn.argtypes = res, args
+    return user32, kernel32
+
+
+class WindowsClipboard:
+    def __init__(self, user32=None, kernel32=None):
+        if user32 is None:
+            user32, kernel32 = _load_api()
         self._u, self._k = user32, kernel32
         self._hwnd = None
         self._privacy = [(user32.RegisterClipboardFormatW(n), d) for n, d in _PRIVACY_FORMATS]
@@ -105,13 +117,15 @@ class WindowsClipboard:
         k.GlobalUnlock(handle)
         if not self._u.SetClipboardData(fmt, handle):  # on success Windows owns it
             k.GlobalFree(handle)
+            raise ClipboardError("the clipboard did not take the data")
 
     def _write(self, items) -> None:
+        """Empty the clipboard and put ``items`` in order, in one open."""
         self._open()
         try:
             if not self._u.EmptyClipboard():
                 raise ClipboardError("the clipboard could not be cleared")
-            for fmt, data in list(items) + [p for p in self._privacy if p[0]]:
+            for fmt, data in items:
                 self._put(fmt, data)
         finally:
             self._close()
@@ -141,14 +155,18 @@ class WindowsClipboard:
         return items
 
     def set_text(self, text: str) -> int:
-        """Put ``text`` on the clipboard; returns the sequence number after it."""
-        self._write([(CF_UNICODETEXT, (text + "\0").encode("utf-16-le"))])
+        """Put ``text`` on the clipboard, marked "not for history or cloud";
+        returns the sequence number after it. The markers go first: if any
+        put fails, ClipboardError is raised and the text is not there."""
+        if not all(fmt for fmt, _ in self._privacy):
+            raise ClipboardError("the clipboard privacy formats are not available")
+        self._write(self._privacy + [(CF_UNICODETEXT, (text + "\0").encode("utf-16-le"))])
         return self.sequence()
 
     def restore(self, items) -> None:
-        """Put saved contents back (an empty list empties the clipboard)."""
-        privacy = {fmt for fmt, _ in self._privacy}
-        self._write([(fmt, data) for fmt, data in items if fmt not in privacy])
+        """Put saved contents back as they were (an empty list empties the
+        clipboard)."""
+        self._write(items)
 
     def get_text(self):
         """The clipboard's text or None (tests and diagnostics)."""

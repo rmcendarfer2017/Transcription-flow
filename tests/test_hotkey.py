@@ -1,13 +1,15 @@
 """The pynput hotkey: hook filter, dispatcher thread, missed key-up."""
 
+import ctypes
 import threading
 
 import pytest
 
 from helpers import wait_for
 from transcription_flow import hotkey as hk
-from transcription_flow.hotkey import (DOWN, HOTKEYS, UP, Hotkey, HotkeyTracker,
-                                       HotkeyUnavailable, PynputHook)
+from transcription_flow.hotkey import (DOWN, HOTKEYS, MISSED_RELEASE, UP, Hotkey,
+                                       HotkeyTracker, HotkeyUnavailable, PynputHook,
+                                       WindowsKeyRepeat)
 
 
 class Clock:
@@ -23,7 +25,7 @@ def tracked():
     log, clock = [], Clock()
     tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
                             lambda reason: log.append(f"cancel: {reason}"), clock=clock,
-                            repeat_gap=1.5)
+                            repeat_gap=lambda: 1.5)
     return tracker, log, clock
 
 
@@ -40,14 +42,17 @@ def test_pause_is_not_offered_because_it_cannot_be_held():
     assert not any("pause" in key or spec.vk == 0x13 for key, spec in HOTKEYS.items())
 
 
-def test_modifiers_pass_through_and_single_purpose_keys_are_suppressed():
-    assert not any(HOTKEYS[k].suppress for k in ("right_ctrl", "right_alt", "right_shift"))
+def test_right_ctrl_passes_through_and_single_purpose_keys_are_suppressed():
+    assert not HOTKEYS["right_ctrl"].suppress
     assert all(HOTKEYS[k].suppress for k in ("caps_lock", "scroll_lock", "f8", "f12"))
 
 
-def test_right_alt_carries_the_altgr_warning():
-    assert "AltGr" in HOTKEYS["right_alt"].note
-    assert all(not spec.note for key, spec in HOTKEYS.items() if key != "right_alt")
+def test_right_alt_and_right_shift_are_not_offered():
+    """review-m2 F4: Right Alt opens the menu bar on release (and is AltGr on
+    many layouts); an 8 s Right Shift hold opens the Filter Keys dialog."""
+    vks = {spec.vk for spec in HOTKEYS.values()}
+    assert not {"right_alt", "right_shift"} & set(HOTKEYS)
+    assert not {0xA4, 0xA5, 0x12, 0xA0, 0xA1, 0x10} & vks  # no Alt or Shift at all
 
 
 # -- missed key-up ------------------------------------------------------------
@@ -85,6 +90,44 @@ def test_after_a_missed_release_the_late_key_up_does_nothing_and_a_new_press_wor
     assert log == ["press", "cancel: the key release was missed", "press"]
 
 
+def test_the_gap_is_read_at_each_press():
+    log, clock, gaps = [], Clock(), [3.0, 1.5]
+    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+                            lambda reason: log.append(f"cancel: {reason}"), clock=clock,
+                            repeat_gap=lambda: gaps.pop(0))
+    tracker.key_down(True)
+    clock.now += 2.9  # inside the first press's 3 s gap
+    tracker.check()
+    tracker.key_up(True)
+    tracker.key_down(True)  # the user changed the setting: 1.5 s now
+    clock.now += 1.6
+    tracker.check()
+    assert log == ["press", "release", "press", f"cancel: {MISSED_RELEASE}"]
+
+
+def no_repeat_tracker(still_down):
+    log, clock = [], Clock()
+    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
+                            lambda reason: log.append(f"cancel: {reason}"), clock=clock,
+                            repeat_gap=lambda: None, still_down=still_down)
+    tracker.key_down(True)
+    clock.now += 60  # no repeats at all with Filter Keys repeat off
+    tracker.check()
+    return log
+
+
+def test_without_repeat_a_key_still_down_is_kept():
+    assert no_repeat_tracker(lambda: True) == ["press"]
+
+
+def test_without_repeat_a_key_seen_up_is_a_missed_release():
+    assert no_repeat_tracker(lambda: False) == ["press", f"cancel: {MISSED_RELEASE}"]
+
+
+def test_without_repeat_and_no_key_state_nothing_is_cancelled():
+    assert no_repeat_tracker(lambda: None) == ["press"]
+
+
 def test_check_when_not_held_does_nothing(tracked):
     tracker, log, clock = tracked
     clock.now += 100
@@ -115,12 +158,25 @@ class FakeHook:
         self.handles = []
         self.fail = fail
 
-    def install(self, spec, put):
+    def install(self, spec, put, paused):
         if self.fail:
             raise HotkeyUnavailable("no hook here")
         handle = FakeHandle(spec, put)
+        handle.paused = paused
         self.handles.append(handle)
         return handle
+
+
+class FakeRepeat:
+    def __init__(self, gap=0.2, down=None):
+        self.gap_value, self.down, self.asked = gap, down, []
+
+    def gap(self):
+        return self.gap_value
+
+    def is_down(self, vk):
+        self.asked.append(vk)
+        return self.down
 
 
 @pytest.fixture
@@ -135,7 +191,7 @@ def running():
         return f
 
     key = Hotkey(note("press"), note("release"), note("cancel"), hook=hook, poll=0.01,
-                 repeat_gap=0.2)
+                 repeat=FakeRepeat(0.2))
     key.start("right_ctrl")
     yield key, hook, log
     key.stop()
@@ -159,6 +215,40 @@ def test_dispatcher_cancels_a_hold_with_no_repeats(running):
     hook.handles[-1].put((DOWN, True))
     assert wait_for(lambda: "cancel: the key release was missed" in log, timeout=3)
     assert log == ["press", "cancel: the key release was missed"]
+
+
+def test_dispatcher_without_repeat_asks_the_key_state_of_right_ctrl():
+    log, hook, repeat = [], FakeHook(), FakeRepeat(gap=None, down=False)
+    key = Hotkey(lambda: log.append("press"), lambda: None, log.append, hook=hook, poll=0.01,
+                 repeat=repeat)
+    key.start("right_ctrl")
+    try:
+        hook.handles[-1].put((DOWN, True))
+        assert wait_for(lambda: MISSED_RELEASE in log, timeout=3)
+        assert log == ["press", MISSED_RELEASE] and repeat.asked[0] == 0xA3
+    finally:
+        key.stop()
+
+
+def test_a_suppressed_key_never_asks_the_key_state():
+    """A key our hook swallows never reaches GetAsyncKeyState: it would read up."""
+    hook, repeat = FakeHook(), FakeRepeat(gap=None, down=False)
+    key = Hotkey(lambda: None, lambda: None, lambda r: None, hook=hook, repeat=repeat)
+    key.set_key("caps_lock")
+    assert key._still_down() is None and repeat.asked == []
+    key.set_key("right_ctrl")
+    assert key._still_down() is False and repeat.asked == [0xA3]
+
+
+def test_set_paused_reaches_the_hook(running):
+    key, hook, log = running
+    paused = hook.handles[-1].paused
+    key.set_paused(True)
+    assert paused.is_set()
+    key.set_key("f9")  # a new hook gets the same flag
+    assert hook.handles[-1].paused is paused and paused.is_set()
+    key.set_paused(False)
+    assert not paused.is_set()
 
 
 def test_a_failing_callback_does_not_kill_the_dispatcher(running):
@@ -233,10 +323,10 @@ class Data:
         self.vkCode, self.flags = vk, flags
 
 
-def install(key_id):
+def install(key_id, paused=None):
     kb, events = FakePynput(), []
-    handle = PynputHook(keyboard_module=kb, platform="win32").install(HOTKEYS[key_id],
-                                                                       events.append)
+    handle = PynputHook(keyboard_module=kb, platform="win32").install(
+        HOTKEYS[key_id], events.append, paused or threading.Event())
     return handle, handle.filter, events
 
 
@@ -255,10 +345,10 @@ def test_filter_treats_left_ctrl_as_another_key():
     assert events == [(DOWN, False)]
 
 
-def test_filter_handles_syskey_messages_for_right_alt():
-    handle, f, events = install("right_alt")
-    f(hk.WM_SYSKEYDOWN, Data(0xA5))
-    f(hk.WM_SYSKEYUP, Data(0xA5))
+def test_filter_handles_syskey_messages():
+    handle, f, events = install("right_ctrl")  # Right Ctrl while Alt is down
+    f(hk.WM_SYSKEYDOWN, Data(0xA3))
+    f(hk.WM_SYSKEYUP, Data(0xA3))
     assert events == [(DOWN, True), (UP, True)]
 
 
@@ -270,6 +360,19 @@ def test_filter_suppresses_a_single_purpose_hotkey_after_queueing_it():
         f(hk.WM_KEYUP, Data(0x14))
     assert f(hk.WM_KEYDOWN, Data(0x41)) is False  # other keys still reach apps
     assert events == [(DOWN, True), (UP, True), (DOWN, False)]
+
+
+def test_while_paused_a_suppressed_hotkey_reaches_apps():
+    """review-m2 F5: a paused F12 or Caps Lock must work as itself."""
+    paused = threading.Event()
+    handle, f, events = install("caps_lock", paused)
+    paused.set()
+    assert f(hk.WM_KEYDOWN, Data(0x14)) is False  # let through
+    assert f(hk.WM_KEYUP, Data(0x14)) is False
+    paused.clear()
+    with pytest.raises(Suppressed):  # resumed: swallowed again
+        f(hk.WM_KEYDOWN, Data(0x14))
+    assert events == [(DOWN, True), (UP, True), (DOWN, True)]
 
 
 @pytest.mark.parametrize("flag", [hk.LLKHF_INJECTED, hk.LLKHF_LOWER_IL_INJECTED])
@@ -289,4 +392,85 @@ def test_filter_never_raises_on_odd_data():
 def test_hook_needs_windows():
     with pytest.raises(HotkeyUnavailable, match="needs Windows"):
         PynputHook(keyboard_module=FakePynput(), platform="linux").install(
-            HOTKEYS["right_ctrl"], lambda e: None)
+            HOTKEYS["right_ctrl"], lambda e: None, threading.Event())
+
+
+# -- the repeat gap from the keyboard settings (review-m2 F3) ---------------------
+
+class FakeUser32:
+    """SystemParametersInfoW and GetAsyncKeyState over plain values."""
+
+    def __init__(self, delay=1, speed=31, filter_keys=None, fail=(), keys=()):
+        self.values = {hk.SPI_GETKEYBOARDDELAY: delay, hk.SPI_GETKEYBOARDSPEED: speed}
+        self.filter_keys = filter_keys  # dict of FILTERKEYS fields, or None (off)
+        self.fail, self.keys = set(fail), set(keys)
+
+    def SystemParametersInfoW(self, action, param, ref, flags):  # noqa: N802
+        if action in self.fail:
+            return 0
+        target = ref._obj
+        if action == hk.SPI_GETFILTERKEYS:
+            assert param == ctypes.sizeof(target) == target.cbSize
+            for name, value in (self.filter_keys or {"dwFlags": 0}).items():
+                setattr(target, name, value)
+        else:
+            target.value = self.values[action]
+        return 1
+
+    def GetAsyncKeyState(self, vk):  # noqa: N802
+        return -32768 if vk in self.keys else 0  # high bit set: down
+
+
+def gap(**kw):
+    return WindowsKeyRepeat(FakeUser32(**kw)).gap()
+
+
+def test_gap_math():
+    assert hk.repeat_gap(0.25, 0.033) == 1.5  # fast settings: the floor
+    assert hk.repeat_gap(2.0, 0.5) == 2.5  # the longer wait plus the margin
+    assert hk.repeat_gap(0.3, 2.0) == 2.5
+
+
+def test_gap_from_the_default_keyboard_settings_is_the_floor():
+    assert gap(delay=1, speed=31) == hk.MIN_REPEAT_GAP
+
+
+def test_gap_for_the_slowest_standard_settings_fits_the_floor():
+    # 1 s delay, about 2.5 repeats a second: 1.0 + 0.5 margin
+    assert gap(delay=3, speed=0) == pytest.approx(1.5)
+
+
+def test_filter_keys_with_a_long_repeat_delay_widens_the_gap():
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iDelayMSec": 2000, "iRepeatMSec": 1000}
+    assert gap(filter_keys=fk) == pytest.approx(2.5)
+
+
+def test_filter_keys_with_repeat_off_gives_no_gap():
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iWaitMSec": 500, "iDelayMSec": 0, "iRepeatMSec": 0}
+    assert gap(filter_keys=fk) is None
+
+
+def test_filter_keys_set_but_off_uses_the_keyboard_settings():
+    fk = {"dwFlags": 0, "iDelayMSec": 0, "iRepeatMSec": 0}  # values kept, feature off
+    assert gap(filter_keys=fk, delay=3, speed=0) == pytest.approx(1.5)
+
+
+def test_bounce_keys_uses_the_keyboard_settings():
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iBounceMSec": 500}
+    assert gap(filter_keys=fk) == hk.MIN_REPEAT_GAP
+
+
+@pytest.mark.parametrize("fail", [hk.SPI_GETKEYBOARDDELAY, hk.SPI_GETKEYBOARDSPEED])
+def test_unreadable_settings_give_the_floor(fail):
+    assert gap(delay=3, speed=0, fail=[fail]) == hk.MIN_REPEAT_GAP
+
+
+def test_no_windows_api_gives_the_floor_and_no_key_state(monkeypatch):
+    monkeypatch.delattr(ctypes, "windll", raising=False)
+    repeat = WindowsKeyRepeat()
+    assert repeat.gap() == hk.MIN_REPEAT_GAP and repeat.is_down(0xA3) is None
+
+
+def test_key_state_reads_the_high_bit():
+    repeat = WindowsKeyRepeat(FakeUser32(keys=[0xA3]))
+    assert repeat.is_down(0xA3) is True and repeat.is_down(0x14) is False

@@ -95,12 +95,15 @@ class Controller:
             if self._state is State.RECORDING:
                 self._finish("release")
 
-    def cancel(self, reason: str) -> None:
+    def cancel(self, reason: str) -> bool:
         """Drop the recording: another key went down while the hotkey was held
-        (a shortcut, not dictation), or the key-up was missed."""
+        (a shortcut, not dictation), or the key-up was missed. True if a
+        recording was dropped."""
         with self._lock:
             if self._cancel():
                 log.info("recording cancelled: %s", reason)
+                return True
+            return False
 
     # -- settings (any thread) -------------------------------------------
     @property

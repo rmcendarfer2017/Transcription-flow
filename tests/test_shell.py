@@ -5,10 +5,11 @@ import sys
 
 import pytest
 
+from transcription_flow import app as app_mod
 from transcription_flow import config
 from transcription_flow.app import App
 from transcription_flow.config import Config
-from transcription_flow.hotkey import HotkeyUnavailable
+from transcription_flow.hotkey import MISSED_RELEASE, HotkeyUnavailable
 from transcription_flow.ui import display
 from transcription_flow.ui.settings import Form, hotkey_choices, model_choices
 from transcription_flow.ui.tray import Tray, TrayActions, make_icon
@@ -55,6 +56,23 @@ def test_dpi_awareness_prefers_shcore_system_aware():
                  user32=Lib(SetProcessDPIAware=Fn(log, "user32")))
     assert display.enable_dpi_awareness(windll) == "system"
     assert log == [("shcore", (1,))]
+
+
+def test_dpi_awareness_access_denied_means_it_was_set_already():
+    log = []
+    windll = Lib(shcore=Lib(SetProcessDpiAwareness=Fn(log, "shcore", result=-2147024891)),
+                 user32=Lib(SetProcessDPIAware=Fn(log, "user32")))
+    assert display.enable_dpi_awareness(windll) == "already set (HRESULT 0x80070005)"
+    assert [name for name, _ in log] == ["shcore"]
+
+
+def test_dpi_awareness_failed_hresult_is_reported_and_falls_back():
+    """review-m2 F10: an HRESULT failure no longer reads as "system"."""
+    log = []
+    windll = Lib(shcore=Lib(SetProcessDpiAwareness=Fn(log, "shcore", result=-2147467259)),
+                 user32=Lib(SetProcessDPIAware=Fn(log, "user32", result=0)))
+    assert display.enable_dpi_awareness(windll) == "unaware after HRESULT 0x80004005"
+    assert [name for name, _ in log] == ["shcore", "user32"]
 
 
 def test_dpi_awareness_falls_back_to_the_legacy_call():
@@ -200,6 +218,14 @@ def test_form_round_trip():
     assert form.start_with_windows and form.to_config() == c
 
 
+def test_form_keeps_the_file_only_settings_of_its_base():
+    base = Config(paste_settle_seconds=2.0)
+    form = Form("f9", "base.en", "en", "paste", False, False)
+    assert form.to_config(base) == Config(hotkey="f9", model="base.en", output="paste",
+                                          paste_settle_seconds=2.0)
+    assert form.to_config().paste_settle_seconds == Config().paste_settle_seconds
+
+
 def test_form_fixes_a_language_the_model_cannot_use():
     form = Form("f9", "base.en", "de", "type", False, False)
     assert form.to_config().language == "en"
@@ -223,6 +249,12 @@ class FakeController:
     def __init__(self):
         self.paused = False
         self.calls = []
+        self.recording = True
+
+    def cancel(self, reason):
+        self.calls.append(("cancel", reason))
+        was, self.recording = self.recording, False
+        return was
 
     def set_paused(self, paused):
         self.paused = paused
@@ -238,6 +270,7 @@ class FakeController:
 class FakeHotkey:
     def __init__(self):
         self.calls = []
+        self.paused = []
         self.fail_for = set()
 
     def start(self, key_id):
@@ -252,6 +285,9 @@ class FakeHotkey:
 
     def stop(self):
         self.calls.append("stop")
+
+    def set_paused(self, paused):
+        self.paused.append(paused)
 
 
 class FakeTray:
@@ -355,6 +391,36 @@ def test_pause_toggles_back_to_ready(shell):
     assert not p["ctl"].paused and p["tray"].statuses[-1] == ("Ready (CPU)", False)
 
 
+def test_pause_also_stops_the_hotkey_suppressing_keys(shell):
+    a, p = shell
+    a.toggle_pause()
+    assert p["hk"].paused == [True]
+    a.toggle_pause()
+    assert p["hk"].paused == [True, False]
+
+
+def test_a_missed_key_release_cancels_with_a_toast(shell):
+    a, p = shell
+    a.cancel_recording(MISSED_RELEASE)
+    assert p["ctl"].calls == [("cancel", MISSED_RELEASE)]
+    assert len(p["ui"]) == 1  # the toast went through the Tk thread
+    assert p["tray"].notes == [app_mod.MISSED_RELEASE_TOAST]
+
+
+def test_a_missed_release_with_nothing_recording_is_silent(shell):
+    a, p = shell
+    p["ctl"].recording = False
+    a.cancel_recording(MISSED_RELEASE)
+    assert p["tray"].notes == [] and p["ui"] == []
+
+
+def test_a_shortcut_cancel_is_silent(shell):
+    a, p = shell
+    a.cancel_recording("another key was pressed")  # Right Ctrl+C: not a problem
+    assert p["ctl"].calls == [("cancel", "another key was pressed")]
+    assert p["tray"].notes == [] and p["ui"] == []
+
+
 def test_errors_show_in_the_status_and_a_toast_until_the_next_good_action(shell):
     a, p = shell
     a.report_error("The microphone sent only silence.")
@@ -413,6 +479,13 @@ def test_saving_applies_each_change_live_and_writes_the_file(shell):
     assert p["run"].calls == [("enable", '"tf.exe" --tray')]
     assert config.load(p["path"]) == Config(hotkey="f9", output="paste", keep_mic_warm=True)
     assert a.config.hotkey == "f9"
+
+
+def test_saving_keeps_a_hand_edited_paste_settle(shell):
+    a, p = shell
+    a.config = Config(paste_settle_seconds=2.0)
+    save(a, p, output="paste")
+    assert config.load(p["path"]) == Config(output="paste", paste_settle_seconds=2.0)
 
 
 def test_a_model_change_is_saved_for_the_next_start_only(shell):

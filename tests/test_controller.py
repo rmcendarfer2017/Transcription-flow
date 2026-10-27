@@ -146,7 +146,7 @@ def test_release_without_press_does_nothing(parts):
 def test_other_key_cancels_the_recording(parts):
     ctl, rec, eng, out, ui, errors = parts
     ctl.press()
-    ctl.cancel("another key was pressed")
+    assert ctl.cancel("another key was pressed") is True
     assert ctl.state is State.IDLE
     ctl.release()
     assert rec.calls == ["start", "cancel"]
@@ -156,7 +156,7 @@ def test_other_key_cancels_the_recording(parts):
 
 def test_other_key_when_idle_does_nothing(parts):
     ctl, rec, eng, out, ui, errors = parts
-    ctl.cancel("another key was pressed")
+    assert ctl.cancel("another key was pressed") is False
     assert rec.calls == [] and ui == []
 
 

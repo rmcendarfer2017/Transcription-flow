@@ -22,7 +22,7 @@ def write(path, data):
 
 
 GOOD = {"version": 1, "hotkey": "f9", "model": "base.en", "language": "en",
-        "output": "paste", "keep_mic_warm": True}
+        "output": "paste", "keep_mic_warm": True, "paste_settle_seconds": 1.5}
 
 
 def test_missing_file_gives_defaults(cfg_path):
@@ -50,6 +50,12 @@ def test_a_good_file_loads_without_warnings(cfg_path, caplog):  # the PASS contr
 @pytest.mark.parametrize("key, bad", [
     ("hotkey", "pause"), ("hotkey", 5), ("model", "large-v3"), ("output", "clipboard"),
     ("keep_mic_warm", "yes"), ("keep_mic_warm", 1), ("language", 7),
+    # review-m2 F1: a list or object where a name belongs (unhashable)
+    ("hotkey", ["f9"]), ("hotkey", {"f9": 1}), ("output", ["paste"]), ("output", {"a": 1}),
+    ("model", ["base.en"]), ("model", {"base.en": 1}), ("language", ["en"]),
+    ("hotkey", "right_alt"), ("hotkey", "right_shift"),  # no longer offered (F4)
+    ("paste_settle_seconds", 0.05), ("paste_settle_seconds", 6), ("paste_settle_seconds", True),
+    ("paste_settle_seconds", "1"), ("paste_settle_seconds", [1]),
 ])
 def test_each_invalid_value_alone_falls_back_to_its_default(cfg_path, caplog, key, bad):
     write(cfg_path, {**GOOD, key: bad})
@@ -100,6 +106,56 @@ def test_broken_json_is_kept_aside_and_defaults_used(cfg_path, text):
     assert config.load(cfg_path) == Config()
     assert not cfg_path.exists()
     assert cfg_path.with_name("config.json.bad").read_text("utf-8") == text
+
+
+@pytest.mark.parametrize("name, raw", [
+    ("notepad unicode (utf-16 with a bom)", json.dumps(GOOD).encode("utf-16")),
+    ("utf-16-le without a bom", json.dumps(GOOD).encode("utf-16-le")),
+    ("ansi with an accent", b'{"version": 1, "language": "fran\xe7ais"}'),
+    ("nested too deeply", b"[" * 100_000),
+])
+def test_a_file_that_is_not_utf8_json_is_kept_aside(cfg_path, caplog, name, raw):
+    """review-m2 F1 / QA B2, B6: each of these used to crash the start."""
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_bytes(raw)
+    with caplog.at_level(logging.WARNING):
+        assert config.load(cfg_path) == Config()
+    assert not cfg_path.exists()
+    assert cfg_path.with_name("config.json.bad").read_bytes() == raw
+    assert any("kept as config.json.bad" in r.getMessage() for r in caplog.records)
+
+
+def test_a_bad_file_that_cannot_be_renamed_is_not_called_kept(cfg_path, caplog, monkeypatch):
+    """QA B6: the log line must say what really happened."""
+    write(cfg_path, "{not json")
+
+    def refuse(src, dst):
+        raise PermissionError("read-only folder")
+
+    monkeypatch.setattr(config.os, "replace", refuse)
+    with caplog.at_level(logging.WARNING):
+        assert config.load(cfg_path) == Config()
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "could not be renamed to config.json.bad (PermissionError)" in messages
+    assert "kept as" not in messages
+    assert cfg_path.exists()
+
+
+def test_a_temp_file_left_by_a_killed_save_is_removed_at_load(cfg_path):
+    """QA B6: kill -9 mid-save leaves .config-XXXX.tmp behind."""
+    config.save(config.from_dict(GOOD), cfg_path)
+    folder = cfg_path.parent
+    (folder / ".config-k1ll3d.tmp").write_text("{half")
+    (folder / ".config-notes.txt").write_text("not ours")
+    (folder / "other.tmp").write_text("not ours")
+    assert config.load(cfg_path) == config.from_dict(GOOD)
+    assert sorted(os.listdir(folder)) == [".config-notes.txt", "config.json", "other.tmp"]
+
+
+def test_a_paste_settle_from_the_file_is_used(cfg_path):
+    write(cfg_path, {**GOOD, "paste_settle_seconds": 3})
+    assert config.load(cfg_path).paste_settle_seconds == 3
+    assert Config().paste_settle_seconds == 0.75
 
 
 @pytest.mark.parametrize("data", [[1, 2], "just a string", None, 3])
@@ -176,6 +232,10 @@ class FakeWinreg:
         assert kind == self.REG_SZ
         self.keys[key.path][name] = value
 
+    def approve(self, flags):
+        """What Task Manager's Startup tab writes (REG_BINARY)."""
+        self.keys.setdefault(("HKCU", autostart.APPROVED_KEY), {})["TranscriptionFlow"] = flags
+
     def DeleteValue(self, key, name):  # noqa: N802
         if name not in self.keys[key.path]:
             raise FileNotFoundError(name)
@@ -193,6 +253,36 @@ def test_run_key_enable_disable_round_trip():
     assert run.is_enabled()
     run.disable()
     assert not run.is_enabled() and reg.keys[("HKCU", autostart.RUN_KEY)] == {}
+
+
+@pytest.mark.parametrize("flags, enabled", [
+    (b"\x03" + bytes(11), False), (b"\x07" + bytes(11), False),  # disabled in Task Manager
+    (b"\x02" + bytes(11), True), (b"\x06" + bytes(11), True), (b"", True),
+])
+def test_run_key_honours_the_task_manager_startup_toggle(flags, enabled):
+    """review-m2 F9: the box must not show ticked when Windows won't start it."""
+    reg = FakeWinreg()
+    run = autostart.RunKey(winreg_module=reg)
+    run.enable('"tf.exe" --tray')
+    reg.approve(flags)
+    assert run.is_enabled() is enabled
+
+
+def test_run_key_enable_clears_the_task_manager_disable():
+    reg = FakeWinreg()
+    run = autostart.RunKey(winreg_module=reg)
+    run.enable('"tf.exe" --tray')
+    reg.approve(b"\x03" + bytes(11))
+    assert not run.is_enabled()
+    run.enable('"tf.exe" --tray')  # the user ticks the box and saves
+    assert run.is_enabled()
+    assert "TranscriptionFlow" not in reg.keys[("HKCU", autostart.APPROVED_KEY)]
+
+
+def test_run_key_without_a_run_value_is_off_whatever_task_manager_says():
+    reg = FakeWinreg()
+    reg.approve(b"\x02" + bytes(11))
+    assert not autostart.RunKey(winreg_module=reg).is_enabled()
 
 
 def test_run_key_is_unavailable_off_windows(monkeypatch):
@@ -231,14 +321,23 @@ def test_real_registry_round_trip_on_a_test_key():
     import winreg
 
     path = rf"Software\TranscriptionFlowTest\Run{os.getpid()}"
-    run = autostart.RunKey(key_path=path)
+    approved = path + "Approved"  # never the real StartupApproved key
+    run = autostart.RunKey(key_path=path, approved_path=approved)
     try:
         run.enable('"x.exe" --tray')
-        assert run.command() == '"x.exe" --tray'
+        assert run.command() == '"x.exe" --tray' and run.is_enabled()
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, approved, 0,
+                                winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, autostart.VALUE_NAME, 0, winreg.REG_BINARY,
+                              b"\x03" + bytes(11))
+        assert not run.is_enabled()
+        run.enable('"x.exe" --tray')
+        assert run.is_enabled()
         run.disable()
         assert not run.is_enabled()
     finally:
-        try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
-        except OSError:
-            pass
+        for key_path in (path, approved):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
+            except OSError:
+                pass
