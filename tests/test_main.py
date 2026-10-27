@@ -97,6 +97,25 @@ def test_read_unsupported_format(tmp_path):
         read_wav(tmp_path / "adpcm.wav")
 
 
+@pytest.mark.parametrize("rate", [0, 1, 999, 768001, 0xFFFFFFFF])
+def test_read_rejects_sample_rates_out_of_range(tmp_path, rate):
+    write_raw_wav(tmp_path / "r.wav", 1, 1, rate, 1, b"\x80" * 32000)  # 8-bit: byte rate fits
+    with pytest.raises(ValueError, match="sample rate"):
+        read_wav(tmp_path / "r.wav")
+
+
+@pytest.mark.parametrize("rate", [1000, 768000])
+def test_read_accepts_the_edge_sample_rates(tmp_path, rate):
+    write_raw_wav(tmp_path / "r.wav", 1, 1, rate, 2, b"\0" * 2000)
+    assert len(read_wav(tmp_path / "r.wav")) == round(1000 * 16000 / rate)
+
+
+def test_read_block_align_zero_is_a_broken_format(tmp_path):
+    write_raw_wav(tmp_path / "z.wav", 1, 1, 16000, 0, b"\0" * 100)
+    with pytest.raises(ValueError, match="broken format chunk"):
+        read_wav(tmp_path / "z.wav")
+
+
 def test_read_not_a_wav(tmp_path):
     (tmp_path / "n.wav").write_bytes(b"ID3 not audio at all")
     with pytest.raises(ValueError, match="not a WAV"):
