@@ -251,7 +251,9 @@ one's licence text is in the `licenses` folder next to
   **PortAudio** (via sounddevice), **six**: MIT. **Pillow**: MIT-CMU.
   **NumPy**, **tokenizers**, **huggingface_hub** and the smaller helpers:
   BSD, MIT or Apache-2.0, as listed.
-- **Python** and **Tcl/Tk**: the PSF licence (`licenses\python`).
+- **Python**: the PSF licence. **Tcl/Tk** (the windows) has its own
+  BSD-style licence; its text, and those of OpenSSL, libffi and bzip2,
+  follow the PSF text in `licenses\python\LICENSE.txt`.
   **PyInstaller**'s bootloader: GPL-2.0 with its exception for bundled apps.
 - **PyAV is not bundled.** faster-whisper imports it only to decode audio
   files, and the app hands it audio as numbers; PyAV's Windows build

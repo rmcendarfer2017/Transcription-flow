@@ -132,14 +132,50 @@ def test_a_cancel_stops_before_the_next_block_is_written(service):
         service.download("tiny.en", lambda d, t: None, cancel)
 
 
-def test_a_download_cancelled_before_it_gets_the_lock_never_starts(service):
-    """review-m3 X6: a job cancelled while it waited for the per-model lock
-    must not open a connection when it gets the lock."""
+class WatchedLock:
+    """A per-model lock that says when a download starts waiting for it."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.waiting = threading.Event()
+
+    def __enter__(self):
+        self.waiting.set()
+        self.lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
+def test_a_download_cancelled_while_it_waits_for_the_lock_never_starts(service):
+    """review-m3 X6, review-m4 F3: a job cancelled while it waited for the
+    per-model lock must not open a connection when it gets the lock. The
+    cancel arrives only after the job is blocked on the lock, so a check
+    made before taking the lock would miss it."""
+    lock = WatchedLock()
+    service._locks["tiny.en"] = lock
+    calls, outcome = [], []
+    service._download = lambda *a, **k: calls.append(a)
     cancel = threading.Event()
-    cancel.set()
-    service._download = lambda *a, **k: pytest.fail("downloaded after the cancel")
-    with pytest.raises(Cancelled):
-        service.download("tiny.en", lambda d, t: None, cancel)
+
+    def run():
+        try:
+            service.download("tiny.en", lambda d, t: None, cancel)
+            outcome.append("finished")
+        except Cancelled:
+            outcome.append("cancelled")
+
+    lock.lock.acquire()  # another download of the same model holds it
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        assert lock.waiting.wait(5), "the download never asked for the lock"
+        cancel.set()
+    finally:
+        lock.lock.release()
+    worker.join(5)
+    assert outcome == ["cancelled"] and calls == []
 
 
 def test_a_restart_waits_for_the_cancelled_download_of_the_same_model(service):

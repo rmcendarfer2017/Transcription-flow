@@ -30,6 +30,9 @@ DESCRIPTION = "Local push-to-talk dictation, inspired by Wispr Flow"
 # user can swap them for modified versions (review-m2 F8).
 LOOSE_MODULES = {"pynput": "py", "pystray": "py"}
 
+# Loaded by name at run time, so check them in the built folder too.
+WIN32_BACKENDS = ("pynput/keyboard/_win32.py", "pystray/_win32.py")
+
 # Not bundled. PyAV's Windows wheel carries an FFmpeg built with x264/x265
 # (GPL); we never decode files (audio reaches faster-whisper as numpy
 # arrays), so rthook_no_av.py stands in for it. The rest are build tools.
@@ -37,11 +40,12 @@ LOOSE_MODULES = {"pynput": "py", "pystray": "py"}
 # our own downloader and faster-whisper only imports the hub for its helpers.
 EXCLUDES = ["av", "hf_xet", "pytest", "_pytest", "pip", "setuptools", "pkg_resources"]
 
-# Wheels that ship no licence file of their own: the note we ship instead.
+# Wheels that ship no licence file of their own. VENDORED_LICENCES: the
+# licence text copied from the project's repo at the pinned tag
+# (ctranslate2: LICENSE at v4.8.4), shipped as licenses/<name>/LICENSE.txt.
+# LICENCE_NOTES: a note, for wheels whose text is already in the folder.
+VENDORED_LICENCES = {"ctranslate2": PACKAGING / "licenses" / "ctranslate2-LICENSE.txt"}
 LICENCE_NOTES = {
-    "ctranslate2": "CTranslate2 is licensed under the MIT License.\n"
-                   "Its wheel ships no licence file; the full text is at\n"
-                   "https://github.com/OpenNMT/CTranslate2/blob/master/LICENSE\n",
     "tokenizers": "tokenizers (Hugging Face) is licensed under the Apache License 2.0;\n"
                   "the text is in LICENSE.txt at the top of this folder.\n",
     "flatbuffers": "FlatBuffers (Google) is licensed under the Apache License 2.0;\n"
@@ -158,7 +162,15 @@ def collected_top_levels(analysis) -> set:
     return tops
 
 
-def add_licences(onedir: Path, dists: dict, python_licence=None) -> list:
+# A python.org Windows build's LICENSE.txt is the PSF licence followed by the
+# licences of the parts built into it (CPython PCbuild/regen.targets).
+PYTHON_ROW = ("Python runtime: PSF-2.0. Its LICENSE.txt also holds the licences of the "
+              "parts\nbundled with it: Tcl/Tk (the Tcl/Tk licence, BSD-style), OpenSSL "
+              "(Apache-2.0),\nlibffi (MIT) and bzip2 (BSD-style)  (licenses/python/)")
+
+
+def add_licences(onedir: Path, dists: dict, python_licence=None,
+                 platform: str = sys.platform) -> list:
     """Write LICENSE.txt, THIRD-PARTY-NOTICES.txt and licenses/<dist>/ into
     the onedir. Raises if a bundled distribution has no licence text and no
     note, so a new dependency can't slip in without one. Returns the names."""
@@ -179,11 +191,15 @@ def add_licences(onedir: Path, dists: dict, python_licence=None) -> list:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest)
         if not files:
-            if name not in LICENCE_NOTES:
+            if name in VENDORED_LICENCES:
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(VENDORED_LICENCES[name], target / "LICENSE.txt")
+            elif name in LICENCE_NOTES:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "LICENSE-NOTE.txt").write_text(LICENCE_NOTES[name], "utf-8")
+            else:
                 missing.append(name)
                 continue
-            target.mkdir(parents=True, exist_ok=True)
-            (target / "LICENSE-NOTE.txt").write_text(LICENCE_NOTES[name], "utf-8")
         rows.append(f"{name} {dist.version}: {_dist_licence(dist)}  (licenses/{name}/)")
     if missing:
         raise SystemExit(f"no licence text for bundled: {', '.join(missing)}; "
@@ -192,7 +208,9 @@ def add_licences(onedir: Path, dists: dict, python_licence=None) -> list:
     if python_licence.is_file():
         (out / "python").mkdir()
         shutil.copyfile(python_licence, out / "python" / "LICENSE.txt")
-        rows.append("Python runtime (with Tcl/Tk): PSF-2.0  (licenses/python/)")
+        rows.append(PYTHON_ROW)
+    elif platform == "win32":  # the only source of the Tcl/Tk and OpenSSL texts (review-m4 F5)
+        raise SystemExit(f"no Python licence at {python_licence}; the bundle needs it")
     notices = PACKAGING / "THIRD-PARTY-NOTICES.txt"
     (onedir / "THIRD-PARTY-NOTICES.txt").write_text(
         notices.read_text("utf-8") + "\n" + "\n".join(rows) + "\n", "utf-8")
@@ -209,10 +227,15 @@ def check_onedir(onedir: Path) -> list:
     for module in LOOSE_MODULES:
         if not (internal / module / "__init__.py").is_file():
             problems.append(f"{module} is not loose in _internal/{module}/ (LGPL)")
+    # The Windows backends, which pynput and pystray import at run time.
+    for rel in WIN32_BACKENDS:
+        if not (internal / rel).is_file():
+            problems.append(f"missing _internal/{rel} (a run-time backend)")
     if (internal / "av").exists() or list(internal.glob("av.libs")):
         problems.append("PyAV/FFmpeg was bundled")
     for rel in ("LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "licenses/LGPL-3.0.txt",
-                "licenses/GPL-3.0.txt", "licenses/pynput", "licenses/pystray"):
+                "licenses/GPL-3.0.txt", "licenses/pynput", "licenses/pystray",
+                "licenses/python/LICENSE.txt"):
         if not (onedir / rel).exists():
             problems.append(f"missing {rel}")
     if not list(internal.glob("faster_whisper/assets/silero_vad*.onnx")):

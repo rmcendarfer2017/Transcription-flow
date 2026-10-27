@@ -92,14 +92,20 @@ jobs:
           PYTHONPATH: src
       - name: Build the onedir with PyInstaller
         run: python -m PyInstaller --noconfirm --clean packaging/transcription_flow.spec
-      - name: Smoke-test the build (selftest on tiny.en, GPU probe, LGPL modules loose, licences)
+      - name: Smoke-test the build (selftest on tiny.en, bundle check, GPU probe, LGPL modules loose, licences)
         run: python packaging/ci_smoke.py frozen dist/TranscriptionFlow tests/fixtures/hello.wav .ci-models
       - name: Build the installer with Inno Setup
         run: |
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner ($iscc)" }
+          $info = (Get-Item $iscc).VersionInfo
+          $isccVer = [version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
+          Write-Output "Inno Setup $isccVer"
+          if ($isccVer -lt [version]"6.3.0") { throw "installer.iss needs Inno Setup 6.3 or newer (x64compatible); this runner has $isccVer" }
           $ver = python packaging/buildinfo.py version
+          if ($LASTEXITCODE -ne 0 -or -not $ver) { throw "buildinfo.py version failed (exit $LASTEXITCODE)" }
           $num = python packaging/buildinfo.py numeric-version
+          if ($LASTEXITCODE -ne 0 -or -not $num) { throw "buildinfo.py numeric-version failed (exit $LASTEXITCODE)" }
           & $iscc "/DAppVersion=$ver" "/DAppNumVersion=$num" "/DSourceDir=$PWD\dist\TranscriptionFlow" `
             "/DOutputDir=$PWD\dist\out" "/DIconFile=$PWD\build\transcription_flow\TranscriptionFlow.ico" `
             packaging\installer.iss
@@ -123,8 +129,10 @@ jobs:
       - name: Sizes in the job summary
         if: ${{ !cancelled() }}
         run: python packaging/ci_smoke.py sizes dist/TranscriptionFlow "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe" "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
+      # Only builds of this repo's own branches: a fork PR's installer must not
+      # look like ours (review-m4 F6).
       - name: Upload the installer and portable zip
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transcription-flow-windows-${{ github.sha }}

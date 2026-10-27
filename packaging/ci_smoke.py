@@ -1,6 +1,6 @@
 """Smoke checks the Windows CI job runs on the built app (see .github/workflows/ci.yml).
 
-    python packaging/ci_smoke.py frozen DIR WAV MODELS_DIR   selftest + GPU probe of DIR's exe
+    python packaging/ci_smoke.py frozen DIR WAV MODELS_DIR   selftest, bundle check, GPU probe
     python packaging/ci_smoke.py install SETUP_EXE            silent install, check what it wrote
     python packaging/ci_smoke.py uninstall [--delete-user-data]
     python packaging/ci_smoke.py defender PATH                 Defender scan if the runner has it
@@ -14,6 +14,8 @@ FAIL or NOT RUN; any FAIL exits 1.
 import argparse
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -70,6 +72,10 @@ def check_frozen(check, onedir: Path, wav: Path, models_dir: Path) -> None:
                                 "--models-dir", str(models_dir), "--expect", "hello", env=env)
     check(code == 0 and report is not None and report.get("ok") is True,
           "--selftest transcribes the fixture with tiny.en", f"exit {code}, {report or err}")
+    code, report, err = run_exe(exe, "--check-bundle", env=env)
+    check(code == 0 and report is not None and report.get("ok") is True,
+          "--check-bundle loads PortAudio, the pynput and pystray backends, Tk and the UI",
+          f"exit {code}, {report or err}")
     model_dir = models_dir / "tiny.en"
     code, report, err = run_exe(exe, "--probe-gpu", "--model-dir", str(model_dir), env=env)
     check(code == 0 and report is not None and isinstance(report.get("ok"), bool),
@@ -88,6 +94,33 @@ def shortcut() -> Path:
 def data_dirs():
     return [Path(os.environ["LOCALAPPDATA"]) / "TranscriptionFlow",
             Path(os.environ["APPDATA"]) / "TranscriptionFlow"]
+
+
+def sentinels():
+    """Files /DELETEUSERDATA must not touch (review-m4 F2): folders next to
+    the two data folders, and the target of a junction inside one of them
+    (a user who moved models to another drive with mklink /J)."""
+    local, roaming = (Path(os.environ[v]) for v in ("LOCALAPPDATA", "APPDATA"))
+    outside = Path(os.environ.get("RUNNER_TEMP", local.parent)) / "tf-junction-target"
+    return [local / "TranscriptionFlowKeep" / "keep.txt",
+            roaming / "TranscriptionFlow.bak" / "keep.txt", outside / "keep.txt"]
+
+
+def junction() -> Path:
+    return data_dirs()[0] / "models" / "linked"
+
+
+def make_sentinels(check) -> None:
+    for path in sentinels():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep", "utf-8")
+    link = junction()
+    if not os.path.isjunction(link):  # a plain uninstall kept the first one
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(sentinels()[-1].parent)],
+                              capture_output=True, text=True, timeout=60)
+        check(done.returncode == 0, "junction in the models folder for the uninstall check",
+              done.stdout + done.stderr)
+    check((link / "keep.txt").is_file(), "the junction points outside the data folder")
 
 
 def reg_value(key: str, name: str):
@@ -127,6 +160,7 @@ def check_install(check, setup: Path) -> None:
     for folder in data_dirs():  # stand-ins for settings and models, for the uninstall check
         (folder / "models").mkdir(parents=True, exist_ok=True)
         (folder / "models" / "marker.txt").write_text("ci", "utf-8")
+    make_sentinels(check)
 
 
 def wait_until(done, seconds: float) -> bool:
@@ -159,22 +193,52 @@ def check_uninstall(check, delete_user_data: bool) -> None:
         else:
             check(folder.exists(), "a plain silent uninstall keeps settings and models",
                   str(folder))
+    for path in sentinels():
+        check(path.is_file(), "the uninstall left this alone", str(path))
+    if delete_user_data:
+        for path in sentinels():
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def defender_tool():
+    """MpCmdRun.exe: the platform copy hosted images keep under ProgramData
+    (newest version first), else the one in Program Files."""
+    platform = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Microsoft" \
+        / "Windows Defender" / "Platform"
+    found = sorted(platform.glob("*/MpCmdRun.exe"), reverse=True)
+    found.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Windows Defender"
+                 / "MpCmdRun.exe")
+    return next((p for p in found if p.is_file()), None)
+
+
+def defender_verdict(output: str):
+    """(threats, why): from MpCmdRun's text, not its exit code, which is 2
+    for a found threat and for a scan that could not run alike (QA B1).
+    threats is None when the scan did not run or the output is unclear."""
+    found = re.search(r"found (\d+) threats?", output, re.I)
+    if found and int(found.group(1)) > 0:  # a threat is never hidden by an error line
+        return int(found.group(1)), found.group(0)
+    if re.search(r"hr\s*=\s*0x[0-9a-f]+|scan (?:failed|could not)|service", output, re.I):
+        return None, "the scan did not run"
+    if found or re.search(r"found no threats", output, re.I):
+        return 0, "found no threats"
+    return None, "no threat count in MpCmdRun's output"
 
 
 def defender(check, path: Path) -> None:
-    tool = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Windows Defender" \
-        / "MpCmdRun.exe"
-    if not tool.is_file():
+    tool = defender_tool()
+    if tool is None:
         print("NOT RUN: Defender scan (MpCmdRun.exe is not on this runner)")
         return
-    done = subprocess.run([str(tool), "-Scan", "-ScanType", "3", "-File", str(path),
+    done = subprocess.run([str(tool), "-Scan", "-ScanType", "3", "-File", str(path.resolve()),
                            "-DisableRemediation"], capture_output=True, text=True, timeout=900)
-    if done.returncode == 2:
-        check(False, "Defender scan", done.stdout[-2000:])
-    elif done.returncode == 0:
-        check(True, "Defender scan found nothing")
-    else:  # service off or not usable on the runner
-        print(f"NOT RUN: Defender scan (MpCmdRun exit {done.returncode})")
+    output = done.stdout + done.stderr
+    print(output[-2000:])
+    threats, why = defender_verdict(output)
+    if threats is None:
+        print(f"NOT RUN: Defender scan ({why}; MpCmdRun exit {done.returncode})")
+    else:
+        check(threats == 0, "Defender scan found no threats", why)
 
 
 def size_of(path: Path) -> int:

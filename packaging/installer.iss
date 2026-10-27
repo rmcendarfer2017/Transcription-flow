@@ -63,7 +63,9 @@ SetupIconFile={#IconFile}
 #endif
 
 [Tasks]
-Name: "autostart"; Description: "Start {#AppName} when I sign in to Windows"; GroupDescription: "Startup:"
+; On an upgrade the box appears only if autostart is still on, so a choice
+; made later in Settings (or Task Manager) survives (review-m4 F4).
+Name: "autostart"; Description: "Start {#AppName} when I sign in to Windows"; GroupDescription: "Startup:"; Check: ShouldWriteRunValue
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -74,7 +76,8 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"; Comment: "Hold 
 [Registry]
 ; The same value the app's "Start with Windows" setting writes
 ; (src/transcription_flow/autostart.py), so there is one source of truth.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#RunValueName}"; ValueData: """{app}\{#ExeName}"" --tray"; Flags: uninsdeletevalue; Tasks: autostart
+; Written on a fresh install, or on an upgrade only if it is already there.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#RunValueName}"; ValueData: """{app}\{#ExeName}"" --tray"; Flags: uninsdeletevalue; Tasks: autostart; Check: ShouldWriteRunValue
 
 [Run]
 Filename: "{app}\{#ExeName}"; Description: "Start {#AppName} now"; Flags: nowait postinstall skipifsilent
@@ -86,6 +89,22 @@ Type: filesandordirs; Name: "{app}\_internal"
 [Code]
 var
   DeleteUserData: Boolean;
+  IsUpgrade: Boolean;
+  HadRunValue: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  { Read before anything is written: an earlier install of this AppId, and
+    whether autostart is on now. }
+  IsUpgrade := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C41FBC91-05D3-4BBB-ADAB-FBC5C12CBECD}_is1');
+  HadRunValue := RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#RunValueName}');
+  Result := True;
+end;
+
+function ShouldWriteRunValue(): Boolean;
+begin
+  Result := (not IsUpgrade) or HadRunValue;
+end;
 
 function HasParam(const Name: String): Boolean;
 var
@@ -108,7 +127,7 @@ begin
   else
     DeleteUserData := MsgBox('Also delete your {#AppName} settings and downloaded speech models?' + #13#10#13#10 +
       'The models can take several hundred MB. Choose No to keep them for a later reinstall.',
-      mbConfirmation, MB_YESNO or MB_DEFBUTTON1) = IDYES;
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;  { No is the default: a stray Enter keeps them }
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -122,6 +141,9 @@ begin
   end;
   if (CurUninstallStep = usPostUninstall) and DeleteUserData then
   begin
+    { Only these two folders (paths.py). DelTree deletes a junction inside
+      them without following it; CI checks that with a junction and with
+      folders next to these (packaging/ci_smoke.py). }
     DelTree(ExpandConstant('{localappdata}\{#DataFolder}'), True, True, True);
     DelTree(ExpandConstant('{userappdata}\{#DataFolder}'), True, True, True);
   end;

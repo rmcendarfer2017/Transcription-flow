@@ -46,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--reset-config", action="store_true",
                    help="put every setting back to its default, then exit")
     p.add_argument("--probe-gpu", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--check-bundle", action="store_true", help=argparse.SUPPRESS)
     return p
 
 
@@ -116,8 +117,19 @@ def run_app(args, models_dir: Path) -> int:
         guard = single_instance.acquire(paths.data_dir())
     except single_instance.AlreadyRunning:
         return _already_running(args)
+    show = listener_error = None
     try:
+        if not _command_only(args):
+            # Right after the guard, so a double-click during startup is
+            # kept until the window can open (review-m4 F8).
+            try:
+                show = single_instance.ShowListener(paths.data_dir())
+            except OSError as err:  # a second launch then just exits; dictation still works
+                listener_error = err
         log_file = logsetup.setup(paths.logs_dir())
+        if listener_error is not None:
+            log.warning("second-launch listener not started (%s)",
+                        type(listener_error).__name__)
         if args.reset_config:
             config.save(config.Config(), paths.config_file())
             print(f"Settings reset: {paths.config_file()}")
@@ -133,18 +145,16 @@ def run_app(args, models_dir: Path) -> int:
                 return EXIT_SETUP
             print(folder)
             return EXIT_OK
-        try:
-            show = single_instance.ShowListener(paths.data_dir())
-        except OSError as err:  # a second launch then just exits; dictation still works
-            log.warning("second-launch listener not started (%s)", type(err).__name__)
-            show = None
-        try:
-            return _run_dictation(args, settings, models_dir, log_file, show)
-        finally:
-            if show is not None:
-                show.close()
+        return _run_dictation(args, settings, models_dir, log_file, show)
     finally:
+        if show is not None:
+            show.close()
         guard.release()
+
+
+def _command_only(args) -> bool:
+    """A run that does one job and exits, without the dictation app."""
+    return args.reset_config or args.download_model or args.verify
 
 
 def _already_running(args) -> int:
@@ -153,7 +163,7 @@ def _already_running(args) -> int:
     something (review-m3 deviation 3)."""
     from . import paths, single_instance
 
-    one_off = args.tray or args.reset_config or args.download_model or args.verify
+    one_off = args.tray or _command_only(args)
     if not one_off and single_instance.request_show(paths.data_dir()):
         if sys.stderr is not None:
             print("Transcription Flow is already running; its window is open.", file=sys.stderr)
@@ -295,6 +305,10 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
+    if args.check_bundle:
+        from . import bundlecheck
+
+        return bundlecheck.main()
     from . import models, paths
 
     models_dir = args.models_dir or paths.models_dir()

@@ -220,14 +220,16 @@ def test_the_gpl_and_lgpl_texts_are_the_v3_texts():
 def test_licences_for_the_collected_distributions(tmp_path):
     dists = buildinfo.bundled_distributions({"numpy", "faster_whisper", "ctranslate2", "yaml"})
     assert {"numpy", "faster-whisper", "ctranslate2", "pyyaml"} <= set(dists)
-    buildinfo.add_licences(tmp_path, dists, python_licence=tmp_path / "none")
+    buildinfo.add_licences(tmp_path, dists, python_licence=tmp_path / "none", platform="linux")
     assert (tmp_path / "LICENSE.txt").read_text("utf-8") == (ROOT / "LICENSE").read_text("utf-8")
     assert (tmp_path / "licenses" / "LGPL-3.0.txt").is_file()
     assert (tmp_path / "licenses" / "GPL-3.0.txt").is_file()
     assert (tmp_path / "licenses" / "numpy" / "LICENSE.txt").is_file()
     assert (tmp_path / "licenses" / "faster-whisper" / "LICENSE").is_file()
-    note = (tmp_path / "licenses" / "ctranslate2" / "LICENSE-NOTE.txt").read_text("utf-8")
-    assert "MIT" in note  # its wheel ships no licence file
+    # Its wheel ships no licence file: the MIT text from its repo at the pinned tag.
+    ct2 = (tmp_path / "licenses" / "ctranslate2" / "LICENSE.txt").read_text("utf-8")
+    assert ct2.startswith("MIT License") and "The OpenNMT Authors" in ct2
+    assert "Permission is hereby granted" in ct2
     notices = (tmp_path / "THIRD-PARTY-NOTICES.txt").read_text("utf-8")
     assert "pynput and pystray" in notices and "_internal/pynput/" in notices
     assert re.search(r"^numpy \S+: BSD-3-Clause", notices, re.M)
@@ -241,6 +243,24 @@ class FakeDist:
 
     def locate_file(self, rel):
         return Path(__file__)  # any readable file
+
+
+def test_the_python_licence_is_copied_and_tcl_tk_is_not_called_psf(tmp_path):
+    licence = tmp_path / "py-LICENSE.txt"
+    licence.write_text("PSF ... Tcl/Tk ...", "utf-8")
+    buildinfo.add_licences(tmp_path / "out", {}, python_licence=licence, platform="win32")
+    assert (tmp_path / "out" / "licenses" / "python" / "LICENSE.txt").read_text("utf-8") == \
+        "PSF ... Tcl/Tk ..."
+    notices = (tmp_path / "out" / "THIRD-PARTY-NOTICES.txt").read_text("utf-8")
+    assert "Python runtime: PSF-2.0." in notices
+    assert "Tcl/Tk (the Tcl/Tk licence, BSD-style)" in notices
+    assert not re.search(r"Tcl/Tk\W*\)?:\s*PSF", notices)  # review-m4 F5
+
+
+def test_a_windows_build_without_the_python_licence_stops(tmp_path):
+    """review-m4 F5: it is the only source of the Tcl/Tk and OpenSSL texts."""
+    with pytest.raises(SystemExit, match="no Python licence"):
+        buildinfo.add_licences(tmp_path, {}, python_licence=tmp_path / "none", platform="win32")
 
 
 def test_a_bundled_distribution_without_a_licence_stops_the_build(tmp_path):
@@ -281,6 +301,8 @@ def fake_onedir(root: Path) -> Path:
                 "licenses/LGPL-3.0.txt", "licenses/GPL-3.0.txt", "licenses/pynput/COPYING.LGPL",
                 "licenses/pystray/COPYING.LGPL", "_internal/pynput/__init__.py",
                 "_internal/pystray/__init__.py", "_internal/ctranslate2/ctranslate2.dll",
+                "_internal/pynput/keyboard/_win32.py", "_internal/pystray/_win32.py",
+                "licenses/python/LICENSE.txt",
                 "_internal/faster_whisper/assets/silero_vad_v6.onnx"):
         (onedir / rel).parent.mkdir(parents=True, exist_ok=True)
         (onedir / rel).write_text("x", "utf-8")
@@ -297,6 +319,11 @@ def test_check_onedir_passes_a_complete_folder(tmp_path):
     (lambda d: (d / "_internal/av").mkdir(), "PyAV/FFmpeg was bundled"),
     (lambda d: (d / "_internal/av.libs").mkdir(), "PyAV/FFmpeg was bundled"),
     (lambda d: (d / "licenses/LGPL-3.0.txt").unlink(), "missing licenses/LGPL-3.0.txt"),
+    (lambda d: (d / "licenses/python/LICENSE.txt").unlink(),
+     "missing licenses/python/LICENSE.txt"),
+    (lambda d: (d / "_internal/pynput/keyboard/_win32.py").unlink(),
+     "missing _internal/pynput/keyboard/_win32.py"),
+    (lambda d: (d / "_internal/pystray/_win32.py").unlink(), "missing _internal/pystray/_win32.py"),
     (lambda d: (d / "_internal/faster_whisper/assets/silero_vad_v6.onnx").unlink(), "VAD"),
     (lambda d: (d / "_internal/ctranslate2/ctranslate2.dll").unlink(), "ctranslate2"),
     (lambda d: (d / "TranscriptionFlow.exe").unlink(), "TranscriptionFlow.exe is missing"),
@@ -375,6 +402,7 @@ def test_installer_run_value_is_the_one_the_app_writes(tmp_path):
     assert entry["Root"] == "HKCU" and entry["Subkey"] == autostart.RUN_KEY
     assert entry["ValueName"] == autostart.VALUE_NAME
     assert "uninsdeletevalue" in entry["Flags"] and entry["Tasks"] == "autostart"
+    assert entry["Check"] == "ShouldWriteRunValue"  # review-m4 F4
     exe = "{app}\\TranscriptionFlow.exe"
     assert entry["ValueData"] == autostart.launch_command(exe, frozen=True)
     assert entry["ValueData"].endswith(" --tray")
@@ -383,6 +411,20 @@ def test_installer_run_value_is_the_one_the_app_writes(tmp_path):
 def test_the_autostart_task_is_on_by_default():
     (task,) = [iss_entry(line) for line in iss_sections()["Tasks"]]
     assert task["Name"] == "autostart" and "unchecked" not in task.get("Flags", "")
+    assert task["Check"] == "ShouldWriteRunValue"
+
+
+def test_an_upgrade_writes_the_run_value_only_if_autostart_is_still_on():
+    """review-m4 F4: turning autostart off in Settings must survive an
+    upgrade. The decision reads the uninstall key and the Run value before
+    anything is written (InitializeSetup)."""
+    code = "\n".join(iss_sections()["Code"])
+    init = re.search(r"function InitializeSetup\(\): Boolean;.*?\nend;", code, re.S).group(0)
+    assert (f"IsUpgrade := RegKeyExists(HKCU, '{ci_smoke.UNINSTALL_KEY}');" in init)
+    assert (f"HadRunValue := RegValueExists(HKCU, '{autostart.RUN_KEY}', "
+            f"'{autostart.VALUE_NAME}');" in init)
+    should = re.search(r"function ShouldWriteRunValue\(\): Boolean;.*?\nend;", code, re.S)
+    assert "Result := (not IsUpgrade) or HadRunValue;" in should.group(0)
 
 
 def test_installer_has_a_start_menu_entry_and_installs_the_whole_onedir():
@@ -403,9 +445,16 @@ def test_uninstall_removes_autostart_and_asks_about_the_apps_data_folders(monkey
     monkeypatch.setenv("APPDATA", "R")
     assert paths.data_dir() == Path("L") / "TranscriptionFlow"
     assert paths.config_file().parent == Path("R") / "TranscriptionFlow"
-    assert "DelTree(ExpandConstant('{localappdata}\\TranscriptionFlow')" in code
-    assert "DelTree(ExpandConstant('{userappdata}\\TranscriptionFlow')" in code
-    assert "MB_YESNO or MB_DEFBUTTON1" in code  # Yes is the default (plan 3.9)
+    # Exactly these two calls, nothing wider (review-m4 F2); CI checks that
+    # folders next to them and a junction's target survive.
+    assert re.findall(r"\bDelTree\s*\((.*?)\);", code) == [
+        "ExpandConstant('{localappdata}\\TranscriptionFlow'), True, True, True",
+        "ExpandConstant('{userappdata}\\TranscriptionFlow'), True, True, True"]
+    assert not re.search(r"\b(DeleteFile|RemoveDir|DelayDeleteFile)\s*\(", code)
+    assert [iss_entry(line) for line in iss_sections()["UninstallDelete"]] == [
+        {"Type": "filesandordirs", "Name": "{app}\\_internal"}]
+    assert "MB_YESNO or MB_DEFBUTTON2" in code  # No is the default (plan 3.9, QA B5)
+    assert "MB_DEFBUTTON1" not in code
     assert "HasParam('/DELETEUSERDATA')" in code and "UninstallSilent" in code
 
 
@@ -484,3 +533,101 @@ def test_sizes_go_to_the_job_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     assert ci_smoke.main(["sizes", str(tmp_path / "a.zip")]) == 0
     assert "Windows build sizes" in summary.read_text("utf-8")
+
+
+def test_the_upload_runs_only_for_pushes_and_same_repo_prs():
+    """review-m4 F6: a fork PR's build must not upload an installer that
+    looks like ours."""
+    job = workflows()["ci.yml"]["jobs"]["windows-build"]
+    (upload,) = [s for s in job["steps"] if "upload-artifact" in s.get("uses", "")]
+    assert upload["if"] == ("${{ !cancelled() && (github.event_name == 'push' || "
+                            "github.event.pull_request.head.repo.full_name == github.repository) }}")
+
+
+def test_the_iscc_step_checks_the_inno_version_and_the_version_calls():
+    """QA B2 and review-m4 F7: fail with the real cause, not a later 'file not found'."""
+    job = workflows()["ci.yml"]["jobs"]["windows-build"]
+    (step,) = [s for s in job["steps"] if "ISCC" in s.get("run", "")]
+    run = step["run"]
+    assert '[version]"6.3.0"' in run and "throw" in run
+    for call in ("$ver = python packaging/buildinfo.py version",
+                 "$num = python packaging/buildinfo.py numeric-version"):
+        after = run.split(call, 1)[1].splitlines()[1]
+        assert after.strip().startswith("if ($LASTEXITCODE -ne 0 -or -not $"), call
+        assert "throw" in after
+
+
+# -- CI smoke: the frozen checks, Defender and the uninstall sentinels ---------------------
+
+
+def test_check_frozen_runs_the_bundle_check(tmp_path, monkeypatch, capsys):
+    """review-m4 F1: the frozen exe imports PortAudio, the pynput and pystray
+    backends, Tk and the UI, not only the selftest's modules."""
+    onedir = fake_onedir(tmp_path)
+    runs = []
+
+    def fake_run(exe, *args, env=None):
+        runs.append(args[0])
+        ok = not (args[0] == "--check-bundle" and bundle_fails)
+        return 0 if ok else 1, {"ok": ok}, ""
+
+    monkeypatch.setattr(ci_smoke, "run_exe", fake_run)
+    for bundle_fails in (False, True):
+        check = ci_smoke.Checks()
+        ci_smoke.check_frozen(check, onedir, tmp_path / "x.wav", tmp_path / "models")
+        assert check.failed == bundle_fails
+    assert runs.count("--check-bundle") == 2 and "--selftest" in runs
+    assert "FAIL: --check-bundle" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("output, threats", [
+    ("Scan starting...\nScan finished.\nScanning C:\\dist found no threats.\n", 0),
+    ("Scanning C:\\dist found 1 threats.\n\nThreat : Virus:DOS/EICAR_Test_File\n", 1),
+    ("Scan starting...\nCmdTool: Failed with hr = 0x80508023. Check C:\\...\\MpCmdRun.log\n",
+     None),
+    ("Scan starting...\nCmdTool: The service is not running\n", None),
+    ("", None),
+    # a threat is never hidden by an error line next to it
+    ("Scanning C:\\dist found 2 threats.\nCmdTool: Failed with hr = 0x1\n", 2),
+])
+def test_the_defender_verdict_comes_from_the_output_not_the_exit_code(output, threats):
+    """QA B1: MpCmdRun exits 2 both for a threat and for a scan that can't run."""
+    assert ci_smoke.defender_verdict(output)[0] == threats
+
+
+def test_defender_reports_not_run_when_the_scan_cannot_run(tmp_path, monkeypatch, capsys):
+    tool = tmp_path / "MpCmdRun.exe"
+    tool.write_text("x")
+    monkeypatch.setattr(ci_smoke, "defender_tool", lambda: tool)
+    outputs = iter(["CmdTool: Failed with hr = 0x80508023", "found 1 threats", "found no threats"])
+    monkeypatch.setattr(ci_smoke.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, 2, next(outputs), ""))
+    results = []
+    for _ in range(3):
+        check = ci_smoke.Checks()
+        ci_smoke.defender(check, tmp_path)
+        results.append(check.failed)
+    assert results == [0, 1, 0]
+    assert "NOT RUN: Defender scan (the scan did not run; MpCmdRun exit 2)" in \
+        capsys.readouterr().out
+
+
+def test_the_uninstall_sentinels_sit_outside_the_data_folders(tmp_path, monkeypatch):
+    """review-m4 F2: next to both data folders, and a junction target outside them."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "temp"))
+    data = ci_smoke.data_dirs()
+    keep = ci_smoke.sentinels()
+    assert [p.parent.parent for p in keep[:2]] == [d.parent for d in data]
+    assert all(not p.is_relative_to(d) for p in keep for d in data)
+    assert keep[2].parent == tmp_path / "temp" / "tf-junction-target"
+    assert ci_smoke.junction().is_relative_to(data[0] / "models")
+
+
+def test_the_windows_build_runs_both_uninstalls_after_an_install_with_sentinels():
+    source = (PACKAGING / "ci_smoke.py").read_text("utf-8")
+    install = source.split("def check_install", 1)[1].split("\ndef ", 1)[0]
+    assert "make_sentinels(check)" in install
+    uninstall = source.split("def check_uninstall", 1)[1].split("\ndef ", 1)[0]
+    assert 'check(path.is_file(), "the uninstall left this alone"' in uninstall

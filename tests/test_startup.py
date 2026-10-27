@@ -270,6 +270,24 @@ def test_a_second_launch_with_no_model_brings_up_the_setup_window(started):
     assert len(Seen.wizards) == 1 and Seen.windows == []  # the open one, lifted
 
 
+def test_a_second_launch_during_startup_is_kept_until_the_window_can_open(started,
+                                                                        monkeypatch):
+    """review-m4 F8: a double-click while the first copy is still reading its
+    settings (before the model load) must not be lost."""
+    install("small.en")
+    codes, real_load = [], config.load
+
+    def load_with_a_second_launch(path):
+        if not codes:
+            codes.append(app_main.main([]))
+        return real_load(path)
+
+    monkeypatch.setattr(config, "load", load_with_a_second_launch)
+    assert started() == app_main.EXIT_OK
+    assert codes == [app_main.EXIT_OK]
+    assert len(Seen.windows) == 1
+
+
 @pytest.mark.parametrize("argv", [("--tray",), ("--reset-config",),
                                   ("--download-model", "--model", "tiny.en")])
 def test_a_sign_in_start_or_a_one_off_command_opens_nothing(started, argv):
