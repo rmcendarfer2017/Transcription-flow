@@ -53,6 +53,12 @@ def _spec(name: str, manifest: dict) -> dict:
         raise ModelError(f"Unknown model {name!r}.") from None
 
 
+def size_label(size: int) -> str:
+    """Bytes as the user reads them: "484 MB", "1.5 GB"."""
+    mb = size / 1e6
+    return f"{mb / 1000:.1f} GB" if mb >= 1000 else f"{mb:.0f} MB"
+
+
 def model_path(name: str, models_dir: Path) -> Path:
     return Path(models_dir) / name
 

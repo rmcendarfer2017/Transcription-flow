@@ -8,15 +8,17 @@ window imports tkinter only when it opens and runs on the Tk thread.
 import dataclasses
 import logging
 
-from ..config import Config, languages_for
+from ..config import Config, language_for, languages_for
 from ..hotkey import HOTKEYS
-from ..models import DEFAULT_MODEL, load_manifest
+from ..models import DEFAULT_MODEL, load_manifest, size_label
 from ..output import OUTPUT_MODES
 
 log = logging.getLogger(__name__)
 
 TITLE = "Transcription Flow settings"
-RESTART_NOTE = "A new model or language is used the next time Transcription Flow starts."
+MODEL_NOTE = ("A model that isn't downloaded yet downloads when you save (progress in the tray "
+              "icon); the current one keeps working until it's ready.")
+DEFAULT_MIC_LABEL = "Windows default microphone"
 
 
 @dataclasses.dataclass
@@ -27,33 +29,44 @@ class Form:
     output: str
     keep_mic_warm: bool
     start_with_windows: bool
+    mic: str = ""
 
     @classmethod
     def from_config(cls, config: Config, start_with_windows: bool) -> "Form":
         return cls(config.hotkey, config.model, config.language, config.output,
-                   config.keep_mic_warm, start_with_windows)
+                   config.keep_mic_warm, start_with_windows, config.mic)
 
     def to_config(self, base: Config = None) -> Config:
         """``base`` keeps the settings the form doesn't show (file-only ones)."""
-        language = self.language
-        if language not in languages_for(self.model):
-            language = next(iter(languages_for(self.model)))
         return dataclasses.replace(base or Config(), hotkey=self.hotkey, model=self.model,
-                                   language=language, output=self.output,
-                                   keep_mic_warm=self.keep_mic_warm)
+                                   language=language_for(self.model, self.language),
+                                   output=self.output,
+                                   keep_mic_warm=self.keep_mic_warm, mic=self.mic)
 
 
-def model_choices() -> dict:
-    """name -> label with the download size, smallest first."""
+def model_choices(installed=()) -> dict:
+    """name -> label with the download size, smallest first; the names in
+    ``installed`` are marked "downloaded"."""
     models = load_manifest()["models"]
     sizes = {name: sum(f["size"] for f in spec["files"]) for name, spec in models.items()}
     labels = {}
     for name in sorted(models, key=sizes.get):
-        mb = sizes[name] / 1e6
-        size = f"{mb / 1000:.1f} GB" if mb >= 1000 else f"{mb:.0f} MB"
-        tip = ", recommended" if name == DEFAULT_MODEL else ""
-        labels[name] = f"{name} ({size}{tip})"
+        notes = [size_label(sizes[name])]
+        if name == DEFAULT_MODEL:
+            notes.append("recommended")
+        if name in installed:
+            notes.append("downloaded")
+        labels[name] = f"{name} ({', '.join(notes)})"
     return labels
+
+
+def mic_choices(available, saved: str) -> dict:
+    """device name ("" = the default) -> label. A saved mic that isn't
+    plugged in stays listed, so opening a window doesn't silently drop it."""
+    choices = {"": DEFAULT_MIC_LABEL, **{name: name for name in available}}
+    if saved and saved not in choices:
+        choices[saved] = f"{saved} (not connected)"
+    return choices
 
 
 def hotkey_choices() -> dict:
@@ -61,16 +74,25 @@ def hotkey_choices() -> dict:
 
 
 class SettingsWindow:
-    """One Toplevel; ``on_save(form)`` runs on the Tk thread."""
+    """One Toplevel; ``on_save(form)`` runs on the Tk thread. ``app`` gives
+    the microphone list, the level meter and the installed models."""
 
-    def __init__(self, parent, form: Form, autostart_available: bool, on_save, on_close=None):
+    METER_MS = 100
+
+    def __init__(self, parent, form: Form, autostart_available: bool, on_save, on_close=None,
+                 app=None):
         import tkinter as tk
         from tkinter import ttk
 
         self._on_save = on_save
         self._on_close = on_close
-        self._hotkeys, self._models, self._outputs = (hotkey_choices(), model_choices(),
-                                                      dict(OUTPUT_MODES))
+        self._app = app
+        self._meter = self._meter_job = None
+        installed = set(app.models.installed()) if app is not None else ()
+        mics = app.mic_list() if app is not None else []
+        self._hotkeys, self._models, self._outputs, self._mics = (
+            hotkey_choices(), model_choices(installed), dict(OUTPUT_MODES),
+            mic_choices(mics, form.mic))
         win = self.window = tk.Toplevel(parent)
         win.title(TITLE)
         win.resizable(False, False)
@@ -85,27 +107,32 @@ class SettingsWindow:
         self._languages = languages_for(form.model)
         self.language = self._combo(frame, 2, "Language", self._languages, form.language)
         self.output = self._combo(frame, 3, "Output", self._outputs, form.output)
+        self.mic = self._combo(frame, 4, "Microphone", self._mics, form.mic)
+        self.mic.bind("<<ComboboxSelected>>", lambda e: self._start_meter())
+        self.meter_bar = ttk.Progressbar(frame, length=200, maximum=1.0)
+        self.meter_bar.grid(row=5, column=1, sticky="w", pady=(0, 4))
 
         self.keep_warm = tk.BooleanVar(value=form.keep_mic_warm)
         ttk.Checkbutton(frame, text="Keep the microphone open between dictations "
                         "(catches the first word; the mic-in-use icon stays on)",
-                        variable=self.keep_warm).grid(row=4, column=0, columnspan=2,
+                        variable=self.keep_warm).grid(row=6, column=0, columnspan=2,
                                                       sticky="w", pady=(8, 0))
         self.autostart = tk.BooleanVar(value=form.start_with_windows)
         check = ttk.Checkbutton(frame, text="Start with Windows", variable=self.autostart)
-        check.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         if not autostart_available:
             check.state(["disabled"])
-        ttk.Label(frame, text=RESTART_NOTE, wraplength=360).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(frame, text=MODEL_NOTE, wraplength=360).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=(16, 0))
         ttk.Button(buttons, text="Cancel", command=self.close).grid(row=0, column=0, padx=4)
         ttk.Button(buttons, text="Save", command=self.save, default="active").grid(row=0,
                                                                                     column=1)
         win.bind("<Escape>", lambda e: self.close())
         self._update_languages()
+        self._start_meter()
         win.lift()
         win.focus_force()
 
@@ -132,13 +159,42 @@ class SettingsWindow:
         self.language.state(["disabled"] if len(self._languages) == 1 else ["!disabled",
                                                                              "readonly"])
 
+    # -- the level meter: the picked mic, saved or not ----------------------
+    def _start_meter(self) -> None:
+        self._stop_meter()
+        if self._app is None or self._app.meter_factory is None:
+            return
+        meter = self._app.meter_factory(self._key(self.mic, self._mics) or None)
+        try:
+            meter.start()
+        except Exception as err:  # MicrophoneError: no bar, the save still works
+            log.info("level meter unavailable (%s)", type(err).__name__)
+            return
+        self._meter = meter
+        self._tick_meter()
+
+    def _tick_meter(self) -> None:
+        if self._meter is None or self.window is None:
+            return
+        self.meter_bar.configure(value=self._meter.level())
+        self._meter_job = self.window.after(self.METER_MS, self._tick_meter)
+
+    def _stop_meter(self) -> None:
+        if self._meter_job is not None and self.window is not None:
+            self.window.after_cancel(self._meter_job)
+        self._meter_job = None
+        if self._meter is not None:
+            self._meter.stop()
+            self._meter = None
+
     def form(self) -> Form:
         return Form(hotkey=self._key(self.hotkey, self._hotkeys),
                     model=self._key(self.model, self._models),
                     language=self._key(self.language, self._languages),
                     output=self._key(self.output, self._outputs),
                     keep_mic_warm=bool(self.keep_warm.get()),
-                    start_with_windows=bool(self.autostart.get()))
+                    start_with_windows=bool(self.autostart.get()),
+                    mic=self._key(self.mic, self._mics))
 
     def save(self) -> None:
         form = self.form()
@@ -146,6 +202,7 @@ class SettingsWindow:
         self._on_save(form)
 
     def close(self) -> None:
+        self._stop_meter()
         if self.window is not None:
             self.window.destroy()
             self.window = None

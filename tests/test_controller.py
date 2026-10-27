@@ -443,3 +443,13 @@ def test_a_new_mic_that_fails_to_open_is_reported(parts):
     rec.start_error = NoMicrophoneError("no mic")
     ctl.set_microphone("Headset mic")
     assert errors == ["no mic"]
+
+
+def test_a_new_transcriber_takes_the_next_clip(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    newer = FakeTranscriber(["from the new model"])
+    ctl.set_transcriber(newer)
+    ctl.press()
+    ctl.release()
+    assert idle(ctl)
+    assert out.typed == ["from the new model"] and eng.calls == 0 and newer.calls == 1

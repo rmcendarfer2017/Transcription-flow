@@ -40,6 +40,12 @@ def languages_for(model: str) -> dict:
     return {"auto": "Detect automatically", **COMMON_LANGUAGES}
 
 
+def language_for(model: str, wanted: str) -> str:
+    """``wanted`` if the model knows it, else the model's first language."""
+    choices = languages_for(model)
+    return wanted if wanted in choices else next(iter(choices))
+
+
 def model_names() -> list:
     return list(load_manifest()["models"])
 
@@ -93,7 +99,7 @@ def from_dict(data) -> Config:
     if config.language not in languages_for(config.model):
         log.warning("config: language %r does not suit %s, using the default",
                     config.language, config.model)
-        config.language = next(iter(languages_for(config.model)))
+        config.language = language_for(config.model, config.language)
     return config
 
 

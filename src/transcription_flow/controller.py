@@ -124,6 +124,11 @@ class Controller:
             if paused and self._cancel():
                 log.info("recording cancelled: dictation paused")
 
+    def set_transcriber(self, transcriber) -> None:
+        """A newly loaded model; the clip being transcribed finishes on the old one."""
+        with self._lock:  # the worker reads it once per clip
+            self._transcriber = transcriber
+
     def set_output(self, output) -> None:
         with self._lock:  # the worker reads it once per clip
             self._output = output
@@ -214,7 +219,9 @@ class Controller:
             if audio is None:
                 return
             try:
-                text = self._transcriber.transcribe(audio)
+                with self._lock:
+                    transcriber = self._transcriber
+                text = transcriber.transcribe(audio)
                 if text:
                     log.info("transcribed %d characters", len(text))
                     with self._lock:

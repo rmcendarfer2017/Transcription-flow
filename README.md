@@ -31,8 +31,16 @@ venv\Scripts\pip install -r requirements.txt
 venv\Scripts\python dictation.py
 ```
 
-On first start the app downloads the `small.en` model (about 480 MB) with a
-progress line, then loads it from disk on every later start.
+On first start a setup window opens: it checks your microphone (with a
+level meter), downloads a speech model with a progress bar (`small.en`, about
+490 MB, is recommended; `tiny.en` and `base.en` are smaller and faster), lets
+you pick the dictation key and lets you try it. If you close it before a
+model is downloaded, it opens again at the next start. After that the app
+loads the model from disk and makes no network calls.
+
+If the download fails, the window offers **Retry**, **Use a smaller model**
+and **Open model folder** (you can copy the model files there by hand). A
+download that was cut short resumes where it stopped.
 
 Transcription runs on the CPU by default, which is fast enough for `small.en`.
 `--device auto` uses an NVIDIA GPU, but only after a safe test run in a
@@ -51,9 +59,14 @@ transcription is typed at the current cursor position.
   (longer if Filter Keys sets a slow key repeat), never
   typed into whatever has focus then, and a notification says so.
 - With Filter Keys set to no key repeat, a missed release of Caps Lock,
-  Scroll Lock or an F key can't be noticed. Then a recording that reaches
-  the 5-minute limit is dropped, not typed, and a one-time notification
-  says so. Right Ctrl doesn't have this limit.
+  Scroll Lock or an F key is noticed only at the lock screen or a UAC
+  prompt. In an admin window it can't be, so a recording that reaches the
+  5-minute limit is dropped, not typed, and a one-time notification says so.
+  Right Ctrl doesn't have this limit.
+- When a clip has little or no speech, Whisper sometimes "hears" stock
+  phrases from video subtitles ("Thanks for watching!", "Thank you."). These
+  are dropped when they are the whole transcript; a sentence that contains
+  them is always typed.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
 - The microphone is opened only while you hold the hotkey, so Windows doesn't
@@ -84,14 +97,20 @@ key again (Caps Lock toggles, F12 opens developer tools).
   app's menu bar. Right Shift is not offered either: holding it for 8
   seconds opens the Windows Filter Keys dialog.
 - **Speech model:** tiny.en, base.en or small.en (recommended). The English
-  models (`.en`) need no language setting.
+  models (`.en`) need no language setting. A model that isn't downloaded yet
+  downloads when you save, with the progress in the tray icon's status; the
+  current model keeps working until the new one is ready.
+- **Microphone:** the Windows default, or a specific one, with a level meter.
+  If the chosen microphone is unplugged, the Windows default is used.
 - **Output:** type the text (default), or paste it and restore the
   clipboard.
 - **Keep the microphone open** between dictations.
 - **Start with Windows:** a per-user entry under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin rights).
 
-A new model is used the next time the app starts. Settings are saved in
+If the model in your settings isn't downloaded (a download was cut short,
+say), the app starts with one that is and a notification says which; it
+never downloads at start, so it starts offline too. Settings are saved in
 `%APPDATA%\TranscriptionFlow\config.json` (UTF-8); a damaged file, or one
 saved in another encoding, is kept as `config.json.bad` and the defaults are
 used. One setting is in the file only: `paste_settle_seconds` (default 0.75,
@@ -112,7 +131,7 @@ Command-line options (`venv\Scripts\python dictation.py --help`):
 | `--download-model` | download and verify the model, then exit |
 | `--verify` | re-check the SHA-256 of every installed model file (re-downloads any that fail), then exit |
 | `--reset-config` | put every setting back to its default, then exit |
-| `--tray` | started at sign-in (used by Start with Windows) |
+| `--tray` | started at sign-in (used by Start with Windows); the setup window still opens while no model is downloaded |
 | `--selftest WAV` | transcribe a WAV file on the CPU and print JSON (no UI) |
 
 Models and logs live in `%LOCALAPPDATA%\TranscriptionFlow`. On start the app
@@ -121,12 +140,9 @@ checks only that the model's files are there at the right sizes; run
 
 ## Run on startup (Windows)
 
-Run the app once from a console first (`venv\Scripts\python dictation.py`):
-the first start downloads the `small.en` model, about 480 MB, and without a
-console window you would see no sign of it (a first-run window comes in a
-later version). Then tick **Start with Windows** in Settings. It starts the
-app with `pythonw.exe`, without a console window; messages then go to the
-tray and the log file.
+Tick **Start with Windows** in Settings. It starts the app with
+`pythonw.exe`, without a console window; messages then go to the tray and
+the log file.
 
 ## For developers
 
@@ -140,7 +156,9 @@ src/transcription_flow/
   models_manifest.json
   gpu_probe.py       CUDA test run in a child process
   single_instance.py one copy at a time
-  app.py             wires hotkey, controller, tray and settings together
+  app.py             wires hotkey, controller, tray, settings and setup window
+  model_service.py   installed models, the start-up choice, download and load
+  hallucination.py   drops Whisper's stock phrases on near-silent clips
   config.py          settings file (versioned, checked, atomic save)
   hotkey.py          hold-to-talk key (pynput hook that only queues events)
   output.py          typing, or paste-and-restore
@@ -149,6 +167,7 @@ src/transcription_flow/
   ui/overlay.py      the on-screen pill
   ui/tray.py         the tray icon (pystray)
   ui/settings.py     the settings window (Tk)
+  ui/wizard.py       the first-run setup window (Tk)
   ui/display.py      DPI awareness and the screen's work area
 dictation.py         runs the app from a source checkout
 tests/               pytest suite (no microphone, hotkey or network needed)
