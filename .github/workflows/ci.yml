@@ -98,8 +98,25 @@ jobs:
         run: |
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner ($iscc)" }
-          $info = (Get-Item $iscc).VersionInfo
-          $isccVer = [version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
+          # ISCC.exe's numeric VersionInfo fields are all 0 (PR #4 CI): take the
+          # first x.y.z from the version strings of Inno's files or its uninstall key.
+          $uninstall = "SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+                       "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+          $sources = @()
+          foreach ($file in "ISCC.exe", "ISCmplr.dll", "Compil32.exe") {
+            $info = (Get-Item (Join-Path (Split-Path $iscc) $file) -ErrorAction SilentlyContinue).VersionInfo
+            $sources += $info.ProductVersion, $info.FileVersion
+          }
+          foreach ($hive in "HKLM:", "HKCU:") {
+            foreach ($key in $uninstall) {
+              $sources += (Get-ItemProperty "$hive\$key" -ErrorAction SilentlyContinue).DisplayVersion
+            }
+          }
+          $isccVer = $null
+          foreach ($text in $sources) {
+            if ("$text" -match '\b([1-9]\d*\.\d+\.\d+)') { $isccVer = [version]($Matches[1]); break }
+          }
+          if (-not $isccVer) { throw "could not read the Inno Setup version (the version strings of ISCC.exe, ISCmplr.dll, Compil32.exe and the uninstall keys gave: '$($sources -join "', '")')" }
           Write-Output "Inno Setup $isccVer"
           if ($isccVer -lt [version]"6.3.0") { throw "installer.iss needs Inno Setup 6.3 or newer (x64compatible); this runner has $isccVer" }
           $ver = python packaging/buildinfo.py version

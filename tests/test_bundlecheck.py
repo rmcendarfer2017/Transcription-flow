@@ -43,19 +43,33 @@ FAKES = {
 }
 
 
-def fake_site(root: Path, leave_out=()) -> Path:
+def fake_site(root: Path) -> Path:
     for rel, body in FAKES.items():
-        if rel in leave_out:
-            continue
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(body), "utf-8")
     return root
 
 
-def run_check(site: Path, platform="win32", **env):
-    """bundlecheck.run(platform) in a child with the stand-ins first on the path."""
-    code = f"from transcription_flow import bundlecheck; raise SystemExit(bundlecheck.main({platform!r}))"
+# Hides modules in the child as if the bundle lacked them. Deleting a stand-in
+# file is not enough: the real tkinter would be found in the stdlib (PR #4 CI:
+# on windows-latest it passed, on ubuntu-latest it failed only for want of a
+# display), so the result would depend on the machine.
+HIDE = """
+import sys
+class Hide:
+    def find_spec(self, name, path=None, target=None):
+        if any(name == n or name.startswith(n + ".") for n in {names!r}):
+            raise ModuleNotFoundError(f"No module named {{name!r}} (hidden)", name=name)
+sys.meta_path.insert(0, Hide())
+"""
+
+
+def run_check(site: Path, platform="win32", hide=(), **env):
+    """bundlecheck.run(platform) in a child with the stand-ins first on the path
+    and the modules in hide unimportable."""
+    code = (HIDE.format(names=tuple(hide)) + "from transcription_flow import bundlecheck\n"
+            f"raise SystemExit(bundlecheck.main({platform!r}))")
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                           timeout=120, env=child_env(PYTHONPATH=str(site), **env))
 
@@ -88,13 +102,13 @@ def test_no_audio_device_is_fine(tmp_path):
     assert report(done)["checks"]["sounddevice"].startswith("PortAudio loaded; no devices")
 
 
-@pytest.mark.parametrize("leave_out, failed", [
-    ("pynput/keyboard/_win32.py", {"backends"}),
-    ("pystray/_win32.py", {"backends"}),
-    ("tkinter/__init__.py", {"tkinter", "app modules"}),  # ui/overlay.py imports it too
+@pytest.mark.parametrize("hide, failed", [
+    ("pynput.keyboard._win32", {"backends"}),
+    ("pystray._win32", {"backends"}),
+    ("tkinter", {"tkinter", "app modules"}),  # ui/overlay.py imports it too
 ])
-def test_a_missing_part_fails_and_is_named(tmp_path, leave_out, failed):
-    done = run_check(fake_site(tmp_path, leave_out=[leave_out]))
+def test_a_missing_part_fails_and_is_named(tmp_path, hide, failed):
+    done = run_check(fake_site(tmp_path), hide=[hide])
     assert done.returncode == 1
     result = report(done)
     assert result["ok"] is False
@@ -131,8 +145,10 @@ def test_the_hidden_flag_runs_it_and_prints_the_report_last(tmp_path):
                                         TFLOW_HOME=str(home)))
     assert done.returncode == 0, done.stderr
     result = report(done)
-    assert result["ok"] is True and result["checks"]["backends"].startswith(
-        "no fixed backend on ")
+    # It checks the real platform: the stand-in backends on Windows (PR #4 CI).
+    backends = ("pynput.keyboard._win32, pystray._win32" if sys.platform == "win32"
+                else f"no fixed backend on {sys.platform}")
+    assert result["ok"] is True and result["checks"]["backends"] == backends
     assert not home.exists()  # it never took the single-instance guard or wrote a log
     assert "--check-bundle" not in app_main._parser().format_help()
 

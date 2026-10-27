@@ -11,6 +11,7 @@ import subprocess
 import sys
 import textwrap
 import zipfile
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -241,7 +242,8 @@ class FakeDist:
     def __init__(self, name, files=()):
         self.metadata = {"Name": name, "License-Expression": "MIT"}
         self.version = "1.0"
-        self.files = [Path(f) for f in files]
+        # Like Distribution.files: PackagePath is POSIX on Windows too (PR #4 CI).
+        self.files = [metadata.PackagePath(f) for f in files]
 
     def locate_file(self, rel):
         return Path(__file__)  # any readable file
@@ -556,6 +558,9 @@ def test_the_iscc_step_checks_the_inno_version_and_the_version_calls():
     (step,) = [s for s in job["steps"] if "ISCC" in s.get("run", "")]
     run = step["run"]
     assert '[version]"6.3.0"' in run and "throw" in run
+    # PR #4 CI: ISCC.exe's numeric version fields are 0, which read as "Inno Setup 0.0.0".
+    assert "FileMajorPart" not in run and "DisplayVersion" in run
+    assert 'throw "could not read the Inno Setup version' in run
     for call in ("$ver = python packaging/buildinfo.py version",
                  "$num = python packaging/buildinfo.py numeric-version"):
         after = run.split(call, 1)[1].splitlines()[1]
