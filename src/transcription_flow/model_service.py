@@ -46,7 +46,7 @@ class ModelService:
         return [n for n in self.names() if self.is_installed(n)]
 
     def needs_download(self, name: str) -> bool:
-        return name in self._suspect or not self.is_installed(name)
+        return self.failed_to_load(name) or not self.is_installed(name)
 
     def smaller_than(self, name: str):
         """The next smaller model, or None."""
@@ -54,11 +54,15 @@ class ModelService:
         i = names.index(name)
         return names[i - 1] if i else None
 
-    def startup_choice(self, wanted: str, skip=()):
+    def failed_to_load(self, name: str) -> bool:
+        """True if ``name`` failed to load and hasn't loaded since."""
+        return name in self._suspect
+
+    def startup_choice(self, wanted: str):
         """``wanted`` if installed; else the default, else the largest
-        installed model; None when nothing is installed. Models in
-        ``skip`` (failed to load) don't count as installed."""
-        installed = [n for n in self.installed() if n not in skip]
+        installed model; None when nothing is installed. A model that
+        failed to load doesn't count as installed (QA B2)."""
+        installed = [n for n in self.installed() if n not in self._suspect]
         if wanted in installed:
             return wanted
         if models.DEFAULT_MODEL in installed:

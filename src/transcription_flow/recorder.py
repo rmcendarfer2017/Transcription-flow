@@ -49,9 +49,11 @@ SILENT_MESSAGE = (
 
 # PortAudio builds its device list (and picks the Windows default) once,
 # when it starts. Restarting it is the only way to see a microphone that
-# was plugged in or out since (review-m3 F3), and a restart would break any
-# open stream, so it happens only while none of ours is open. The lock
-# keeps a restart from running between another thread's lookup and open.
+# was plugged in or out since (review-m3 F3). A restart takes a while on
+# Windows and would break any open stream, so it happens only when a list
+# is shown, or when the chosen mic isn't on the list or won't open, and
+# only while none of our streams is open. The lock keeps a restart from
+# running between another thread's lookup and open.
 _PA_LOCK = threading.RLock()
 _open_streams = weakref.WeakKeyDictionary()  # the sounddevice module -> streams we have open
 
@@ -110,16 +112,20 @@ def input_devices(sd=None) -> list:
         return [name for _i, name in _inputs(sd)]
 
 
+def _index_of(sd, name):
+    """The device index for ``name`` on PortAudio's list, or None."""
+    return next((index for index, found in _inputs(sd) if found == name), None)
+
+
 def find_input(sd, name):
     """The device index for ``name``, or None (the Windows default). A
     microphone that isn't plugged in falls back to the default."""
     if not name:
         return None
-    for index, found in _inputs(sd):
-        if found == name:
-            return index
-    log.warning("the chosen microphone is not connected; using the Windows default")
-    return None
+    index = _index_of(sd, name)
+    if index is None:
+        log.warning("the chosen microphone is not connected; using the Windows default")
+    return index
 
 
 def input_rate(sd, device) -> int:
@@ -155,28 +161,28 @@ def open_input(sd, device, callback):
     raise MicrophoneOpenError(OPEN_FAILED_MESSAGE)
 
 
-def check_input(sd, name) -> None:
-    """Raise NoMicrophoneError if ``name`` (None: the default) and the
-    Windows default both have no input."""
-    with _PA_LOCK:
-        _rescan(sd)
-        input_rate(sd, find_input(sd, name))
-
-
 def open_named(sd, name, callback):
-    """open_input for a microphone by name (None: the Windows default), on
-    a fresh device list. A named one that fails to open (unplugged since
-    the list was read, or busy) is tried once more as the default."""
+    """open_input for a microphone by name (None: the Windows default).
+    It opens from PortAudio's current list, so a press stays quick; only
+    when the name isn't on it or the open fails is the list read again
+    and the mic tried once more. Then the Windows default is used."""
     with _PA_LOCK:
-        _rescan(sd)
-        index = find_input(sd, name)
-        try:
-            return open_input(sd, index, callback)
-        except MicrophoneError:
-            if index is None:
-                raise
-            log.warning("the chosen microphone could not be opened; using the Windows default")
+        if not name:
             return open_input(sd, None, callback)
+        failed = False
+        for fresh in (False, True):
+            if fresh:
+                _rescan(sd)
+            index = _index_of(sd, name)
+            failed = index is not None
+            if failed:
+                try:
+                    return open_input(sd, index, callback)
+                except MicrophoneError:
+                    pass
+        log.warning("the chosen microphone %s; using the Windows default",
+                    "could not be opened" if failed else "is not connected")
+        return open_input(sd, None, callback)
 
 
 def _mono(indata) -> np.ndarray:
@@ -240,7 +246,7 @@ class Recorder:
 
     def check(self) -> None:
         """Raise NoMicrophoneError if there is no input device."""
-        check_input(self.sd, self.device)
+        input_rate(self.sd, find_input(self.sd, self.device))
 
     def open(self) -> None:
         if self._stream is not None:

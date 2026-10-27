@@ -72,10 +72,9 @@ class App:
                  ui_call, stop_ui, settings_factory=None, output_factory=make_output,
                  launch_command=None, log_dir=None, opener=open_folder, device="cpu",
                  models=None, model=None, language=None, wizard_factory=None, spawn=_spawn,
-                 mic_list=None, meter_factory=None, unloadable=()):
+                 mic_list=None, meter_factory=None):
         """``model``/``language``: what the controller's engine runs now
-        (None: no model is installed yet). ``models`` is a ModelService.
-        ``unloadable``: installed models that failed to load at start."""
+        (None: no model is installed yet). ``models`` is a ModelService."""
         self.config = config
         self._config_path = config_path
         self._controller = controller
@@ -96,7 +95,6 @@ class App:
         self._spawn = spawn
         self.mic_list = mic_list or (lambda: [])
         self.meter_factory = meter_factory
-        self._unloadable = tuple(unloadable)
         self._job = None
         self._settings = None
         self._wizard = None
@@ -133,13 +131,12 @@ class App:
         if self._model is None:
             self.open_wizard()
         elif self._model != self.config.model:
-            if self.config.model in self._unloadable:  # QA B2
-                self._tray.notify(f"{self.config.model} could not be loaded; using "
-                                  f"{self._model}. Open Settings and press Save to download "
-                                  "it again.")
+            if self._models.failed_to_load(self.config.model):  # QA B2
+                why, again = "could not be loaded", " again"
             else:
-                self._tray.notify(f"{self.config.model} isn't downloaded yet; using "
-                                  f"{self._model}. Open Settings and press Save to download it.")
+                why, again = "isn't downloaded yet", ""
+            self._tray.notify(f"{self.config.model} {why}; using {self._model}. Open Settings "
+                              f"and press Save to download it{again}.")
         else:
             self._tray.notify(f"Ready. Hold {self.hotkey_label()} to dictate.")
 
@@ -302,8 +299,7 @@ class App:
                 return
             self._cancel_job()
         if target == (self._model, self._language):
-            self._refresh()  # a cancelled download's progress goes (QA B1)
-            self._tell_wizard()
+            self._changed()  # a cancelled download's progress goes (QA B1)
             return
         job = self._job = _Job(name, language, self._models.needs_download(name))
         if job.downloading:
@@ -311,8 +307,7 @@ class App:
                      else "Dictation starts when it's ready.")
             self._tray.notify(f"Downloading the {name} model "
                               f"({size_label(self._models.size(name))}). {still}")
-        self._refresh()
-        self._tell_wizard()
+        self._changed()
         self._spawn(lambda: self._run_job(job))
 
     def retry_model(self) -> None:
@@ -322,8 +317,7 @@ class App:
     def cancel_download(self) -> None:
         if self._job is not None:
             self._cancel_job()
-            self._refresh()
-            self._tell_wizard()
+            self._changed()
 
     def _cancel_job(self) -> None:
         self._job.cancel.set()
@@ -372,9 +366,8 @@ class App:
         self._controller.set_transcriber(engine)
         self._model, self._language = job.target
         log.info("now using %s", job.name)
-        self._refresh()
         self._tray.notify(f"Ready with {job.name}. Hold {self.hotkey_label()} to dictate.")
-        self._tell_wizard()
+        self._changed()
 
     def _job_failed(self, job, message: str) -> None:
         if job is not self._job:
@@ -383,6 +376,11 @@ class App:
         still = f" Still using {self._model}." if self._model else ""
         self._show_error(f"{message}{still}")
         self._tell_wizard(error=message)
+
+    def _changed(self) -> None:
+        """The model state moved on: the tray status and the setup window follow."""
+        self._refresh()
+        self._tell_wizard()
 
     def _tell_wizard(self, error=None) -> None:
         if self._wizard is not None:

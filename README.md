@@ -107,7 +107,9 @@ key again (Caps Lock toggles, F12 opens developer tools).
 - **Microphone:** the Windows default, or a specific one. Picking one, or
   pressing **Test**, runs a level meter (opening Settings alone doesn't turn
   the microphone on). A microphone plugged in while the app runs shows up
-  the next time Settings opens. If the chosen one is unplugged or can't be
+  the next time Settings opens (with "Keep the microphone open" on, after
+  the app restarts: the device list can't be re-read while a microphone is
+  open). If the chosen one is unplugged or can't be
   opened, the Windows default is used.
 - **Output:** type the text (default), or paste it and restore the
   clipboard.

@@ -1,7 +1,6 @@
 """The hallucination filter (review M5): one reason per case, plus keep controls."""
 
 import os
-import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +9,8 @@ import pytest
 
 from transcription_flow import hallucination, models
 from transcription_flow.engine import WhisperEngine
+from transcription_flow.recorder import TARGET_RATE
+from transcription_flow.selftest import read_wav
 from transcription_flow.hallucination import (LITTLE_SPEECH, LITTLE_SPEECH_SECONDS,
                                               ShortPhraseDropped)
 
@@ -18,7 +19,7 @@ HELLO = Path(__file__).parent / "fixtures" / "hello.wav"
 
 
 def verdict(text, seconds):
-    return hallucination.verdict(text, lambda: seconds)
+    return hallucination.verdict(text, lambda: seconds)[0]
 
 
 @pytest.mark.parametrize("text, speech, reason", [
@@ -114,14 +115,13 @@ def test_engine_drops_a_stock_phrase_on_little_speech_with_a_hint(monkeypatch):
 # -- the real VAD on the review's probe clips (review-m3 F1) -----------------------
 
 def _hello():
-    with wave.open(str(HELLO)) as w:
-        return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    return read_wav(HELLO)
 
 
 def _clip(sound, lead, total, seed):
     """``sound`` placed ``lead`` s into ``total`` s of faint noise."""
-    clip = np.zeros(int(total * 16000), np.float32)
-    start = int(lead * 16000)
+    clip = np.zeros(int(total * TARGET_RATE), np.float32)
+    start = int(lead * TARGET_RATE)
     clip[start:start + len(sound)] = sound
     return clip + np.random.default_rng(seed).normal(0, 0.002, len(clip)).astype(np.float32)
 
@@ -131,14 +131,14 @@ WORD_START = 0.352  # where the VAD finds the speech in hello.wav
 
 def word_clip(word, lead, tail):
     """The first ``word`` s of hello.wav, as a quick "Thanks." would be said."""
-    s0 = int(WORD_START * 16000)
-    return _clip(_hello()[s0:s0 + int(word * 16000)], lead, lead + word + tail, seed=1)
+    s0 = int(WORD_START * TARGET_RATE)
+    return _clip(_hello()[s0:s0 + int(word * TARGET_RATE)], lead, lead + word + tail, seed=1)
 
 
 def burst_clip(burst, total):
     """A ``burst`` s noise-like click or cough in a ``total`` s hold."""
-    s0 = int(WORD_START * 16000)
-    return _clip(_hello()[s0:s0 + int(burst * 16000)], 0.6, total, seed=2)
+    s0 = int(WORD_START * TARGET_RATE)
+    return _clip(_hello()[s0:s0 + int(burst * TARGET_RATE)], 0.6, total, seed=2)
 
 
 @pytest.mark.parametrize("word, lead, tail", [

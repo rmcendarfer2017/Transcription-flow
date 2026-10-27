@@ -587,7 +587,7 @@ def test_unreadable_settings_give_the_floor():
 
 
 def test_no_windows_api_gives_the_floor_and_no_key_state(monkeypatch):
-    monkeypatch.delattr(ctypes, "windll", raising=False)
+    monkeypatch.delattr(ctypes, "WinDLL", raising=False)
     repeat = WindowsKeyRepeat()
     assert repeat.gap() == hk.MIN_REPEAT_GAP and repeat.is_down(0xA3) is None
 

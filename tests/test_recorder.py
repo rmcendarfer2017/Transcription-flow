@@ -216,7 +216,9 @@ class RescanningSoundDevice(FakeSoundDevice):
 
     def InputStream(self, samplerate, channels, dtype, device, callback):  # noqa: N802
         assert self._initialized == 1, "opened a stream with PortAudio stopped"
-        if device in self.fail_devices:
+        gone = device is not None and self.devices[device]["name"] not in {
+            d["name"] for d in self.plugged}
+        if device in self.fail_devices or gone:
             raise PortAudioError("Device unavailable")
         return super().InputStream(samplerate, channels, dtype, device, callback)
 
@@ -238,7 +240,18 @@ def test_a_mic_unplugged_while_the_app_runs_falls_back_to_the_default():
     del sd.plugged[1]
     rec.start()
     rec.stop()
-    assert sd.stream.device is None  # not the stale index 1
+    assert sd.stream.device is None and sd.restarts == 1  # not the stale index 1
+
+
+def test_a_press_with_the_mic_on_the_list_does_not_restart_portaudio():
+    """A restart is slow on Windows: never on the hotkey path when it isn't needed."""
+    sd = RescanningSoundDevice([mic("Laptop mic"), mic("USB mic")])
+    for device in ("USB mic", None):
+        rec = Recorder(sd=sd, device=device)
+        rec.start()
+        rec.stop()
+    rec.check()
+    assert sd.restarts == 0
 
 
 def test_the_device_list_is_not_refreshed_while_a_stream_is_open():

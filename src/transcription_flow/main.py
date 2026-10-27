@@ -141,17 +141,17 @@ def run_app(args, models_dir: Path) -> int:
         guard.release()
 
 
-def _first_model(args, settings, service, skip=()):
+def _first_model(args, settings, service):
     """(name, language, folder) to start with; name None when no model is
     installed. Never downloads: an offline start must still start (QA B3).
-    ``skip``: models that failed to load."""
+    A model that failed to load gives way to the next (QA B2)."""
     from . import config
 
     if args.model_dir is not None:
-        if settings.model in skip:
+        if service.failed_to_load(settings.model):
             return None, settings.language, None
         return settings.model, settings.language, args.model_dir
-    name = service.startup_choice(settings.model, skip)
+    name = service.startup_choice(settings.model)
     if name is None:
         return None, settings.language, None
     if name != settings.model:
@@ -175,7 +175,7 @@ def _run_dictation(args, settings, models_dir, log_file) -> int:
                                               paths.data_dir() / "gpu_probe.json")
                       if model_dir is not None else "cpu")
     startup_errors = []
-    engine, unloadable = None, []
+    engine = None
     while name is not None:  # a model that fails to load gives way to the next (QA B2)
         try:
             engine = service.load(name, language, model_dir)
@@ -183,8 +183,7 @@ def _run_dictation(args, settings, models_dir, log_file) -> int:
         except Exception as err:  # keep running: Settings or the setup window can fetch it again
             _notify(f"The {name} speech model could not be loaded ({type(err).__name__}). "
                     f"Log: {log_file}", exc_info=True)
-            unloadable.append(name)
-            name, language, model_dir = _first_model(args, settings, service, unloadable)
+            name, language, model_dir = _first_model(args, settings, service)
 
     keep_warm = args.keep_mic_warm or settings.keep_mic_warm
     recorder = Recorder(device=settings.mic or None, keep_warm=keep_warm)
@@ -235,8 +234,7 @@ def _run_dictation(args, settings, models_dir, log_file) -> int:
               output_factory=output_factory,
               launch_command=autostart.launch_command, log_dir=paths.logs_dir(),
               device=service.device, models=service, model=name, language=language,
-              mic_list=input_devices, meter_factory=lambda device: LevelMeter(device=device),
-              unloadable=unloadable)
+              mic_list=input_devices, meter_factory=lambda device: LevelMeter(device=device))
     try:
         app.start()
     except HotkeyUnavailable as err:

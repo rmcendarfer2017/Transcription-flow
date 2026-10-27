@@ -15,6 +15,8 @@ import logging
 import re
 import unicodedata
 
+from .recorder import TARGET_RATE
+
 log = logging.getLogger(__name__)
 
 # Seconds of unpadded speech. A stock phrase on less than this is taken as
@@ -26,7 +28,6 @@ LITTLE_SPEECH_SECONDS = 0.25
 # tenth of a second of silence, so silence around a word isn't counted.
 VAD_SPEECH_PAD_MS = 0
 VAD_MIN_SILENCE_MS = 100
-SAMPLE_RATE = 16000
 
 # Video outros a dictation user doesn't say on their own: always dropped
 # when they are the whole transcript.
@@ -66,42 +67,36 @@ def speech_seconds(audio) -> float:
 
     spans = get_speech_timestamps(audio, VadOptions(speech_pad_ms=VAD_SPEECH_PAD_MS,
                                                     min_silence_duration_ms=VAD_MIN_SILENCE_MS))
-    return sum(span["end"] - span["start"] for span in spans) / SAMPLE_RATE
+    return sum(span["end"] - span["start"] for span in spans) / TARGET_RATE
 
 
 def verdict(text: str, speech):
-    """Why ``text`` is a hallucination, or None to keep it. ``speech()``
-    gives the seconds of speech; it is asked only for a short phrase.
-    Sound tags are taken off first (QA B3): "[Music] Thanks for watching!"
-    is an outro too."""
+    """(why ``text`` is a hallucination or None to keep it, the seconds of
+    speech or None when not measured). ``speech()`` gives the seconds; it
+    is asked only for a short phrase. Sound tags are taken off first (QA
+    B3): "[Music] Thanks for watching!" is an outro too."""
     if not normalize(text):
-        return "no words"
+        return "no words", None
     words = normalize(_TAG.sub(" ", text))
     if not words:
-        return "only sound tags"  # "[Music]", "(upbeat music)", "[BLANK_AUDIO]"
+        return "only sound tags", None  # "[Music]", "(upbeat music)", "[BLANK_AUDIO]"
     if words in OUTROS:
-        return "a video outro"
-    if words in SHORT_PHRASES and speech() < LITTLE_SPEECH_SECONDS:
-        return LITTLE_SPEECH
-    return None
+        return "a video outro", None
+    if words in SHORT_PHRASES:
+        seconds = speech()
+        return (LITTLE_SPEECH if seconds < LITTLE_SPEECH_SECONDS else None), seconds
+    return None, None
 
 
 def clean(text: str, speech) -> str:
     """``text``, or "" when it is a hallucination. Logs the reason, never
-    the text. A dropped short phrase raises ShortPhraseDropped, so the
-    user hears why nothing was typed."""
-    measured = []
-
-    def once():
-        if not measured:
-            measured.append(speech())
-        return measured[0]
-
-    reason = verdict(text, once)
+    the text. A short phrase dropped on its measured speech raises
+    ShortPhraseDropped, so the user hears why nothing was typed."""
+    reason, seconds = verdict(text, speech)
     if reason is None:
         return text
-    log.info("transcript dropped: %s%s", reason,
-             f" ({measured[0]:.2f} s of speech)" if measured else "")
-    if reason == LITTLE_SPEECH:
-        raise ShortPhraseDropped()
-    return ""
+    if seconds is None:
+        log.info("transcript dropped: %s", reason)
+        return ""
+    log.info("transcript dropped: %s (%.2f s of speech)", reason, seconds)
+    raise ShortPhraseDropped()

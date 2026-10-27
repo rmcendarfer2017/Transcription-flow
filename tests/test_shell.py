@@ -391,6 +391,9 @@ class FakeModels:
     def installed(self):
         return [n for n in SIZES if n in self.have]
 
+    def failed_to_load(self, name):
+        return False
+
     def needs_download(self, name):
         return name not in self.have
 

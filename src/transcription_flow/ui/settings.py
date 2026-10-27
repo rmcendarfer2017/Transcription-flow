@@ -199,8 +199,8 @@ class SettingsWindow:
         if not autostart_available:
             check.state(["disabled"])
         note = model_note(app.config, app.model, service) if app is not None else MODEL_NOTE
-        self.note = ttk.Label(frame, text=note, wraplength=360)
-        self.note.grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(frame, text=note, wraplength=360).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=(16, 0))

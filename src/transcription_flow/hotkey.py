@@ -113,13 +113,14 @@ class WindowsKeyRepeat:
         """``user32``/``last_error``: stand-ins for tests (``last_error()``
         reads the error of the last call made through ``user32``)."""
         self._user32 = user32
-        self._desktop_user32 = user32
         self._last_error = last_error
         self._desktop_error_logged = False
 
     def _api(self):
         if self._user32 is None:
-            self._user32 = ctypes.windll.user32  # AttributeError off Windows
+            # AttributeError off Windows. use_last_error: desktop_locked reads
+            # OpenInputDesktop's error after the call.
+            self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         return self._user32
 
     def gap(self):
@@ -148,9 +149,7 @@ class WindowsKeyRepeat:
         (review-m3 F7: an RDP or kiosk session may always fail it, and
         reading that as locked would cancel every hold)."""
         try:
-            if self._desktop_user32 is None:  # keeps each call's last error
-                self._desktop_user32 = ctypes.WinDLL("user32", use_last_error=True)
-            api = self._desktop_user32
+            api = self._api()
             handle = api.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
             if not handle:
                 error = (self._last_error or ctypes.get_last_error)()

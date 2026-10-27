@@ -42,6 +42,7 @@ class Server:
         self.extra = {}  # name -> bytes sent after the body, with no Content-Length
         self.reject_range = set()  # names answered 416 to any Range request
         self.redirect = {}  # name -> absolute URL for a 302
+        self.pace = None  # (bytes, seconds): send the body in pieces with a pause after each
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -100,7 +101,17 @@ class Server:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)
                     return
-                self.wfile.write(body)
+                if server.pace is None:
+                    self.wfile.write(body)
+                    return
+                piece, pause = server.pace
+                for i in range(0, len(body), piece):
+                    try:
+                        self.wfile.write(body[i:i + piece])
+                        self.wfile.flush()
+                    except OSError:  # the client hung up (a cancel)
+                        return
+                    time.sleep(pause)
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         scheme = "http"

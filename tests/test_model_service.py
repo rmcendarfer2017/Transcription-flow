@@ -64,6 +64,21 @@ def test_startup_choice(service, have, wanted, chosen):
     assert service.startup_choice(wanted) == chosen
 
 
+def test_a_model_that_failed_to_load_is_skipped_at_start_until_it_loads(service):
+    """QA B2: the next start choice passes over it, and the toast can say why."""
+    install(service, "tiny.en")
+    install(service, "small.en")
+    FakeEngine.broken = True
+    with pytest.raises(RuntimeError):
+        service.load("small.en", "en")
+    assert service.failed_to_load("small.en") and not service.failed_to_load("tiny.en")
+    assert service.startup_choice("small.en") == "tiny.en"
+    FakeEngine.broken = False
+    service.load("small.en", "en")
+    assert not service.failed_to_load("small.en")
+    assert service.startup_choice("small.en") == "small.en"
+
+
 def test_startup_prefers_the_default_over_a_larger_installed_model(tmp_path):
     """With a model bigger than the default installed, the default still wins."""
     medium = {**MANIFEST["models"]["small.en"], "repo": "x/medium.en",
@@ -211,56 +226,20 @@ def test_the_real_downloader_is_looked_up_at_call_time(service, monkeypatch):
     assert calls == ["base.en"]
 
 
-class SlowServer:
-    """Sends a file in pieces with a pause between them, with Range support."""
-
-    def __init__(self, data, piece=64 << 10, pause=0.05):
-        import http.server
-
-        self.data, self.ranges = data, []
-        server = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):  # noqa: N802
-                rng = self.headers.get("Range")
-                server.ranges.append(rng)
-                start = int(rng.split("=")[1].split("-")[0]) if rng else 0
-                self.send_response(206 if rng else 200)
-                self.send_header("Content-Length", str(len(data) - start))
-                self.end_headers()
-                for i in range(start, len(data), piece):
-                    try:
-                        self.wfile.write(data[i:i + piece])
-                        self.wfile.flush()
-                    except OSError:
-                        return
-                    time.sleep(pause)
-
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
-
-    def close(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-
-
 def test_cancel_inside_a_read_then_download_again_resumes_cleanly(tmp_path, monkeypatch):
     """review-m3 F2 with the real downloader (the review's race probe): the
     first download is cancelled while blocked in a read, and the same model
     is started again at once. Before the fix both wrote to the .part file
     and the restart failed its checksum, deleting what was fetched."""
-    import hashlib
     import os
 
+    from test_models import Server, make_manifest
+
     data = os.urandom(1 << 20)
-    manifest = {"version": 1, "models": {"m": {"repo": "r/m", "revision": "x", "files": [
-        {"name": "model.bin", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}]}}}
+    manifest = make_manifest({"model.bin": data})
     monkeypatch.setattr(models, "CHUNK", 256 << 10)  # each read waits for 4 pieces
-    server = SlowServer(data)
+    server = Server({"model.bin": data})
+    server.pace = (64 << 10, 0.05)
     try:
         service = ModelService(tmp_path / "models", manifest=manifest, download=(
             lambda *a, **k: models.download(*a, base_url=server.url, timeout=10, **k)))
@@ -268,7 +247,7 @@ def test_cancel_inside_a_read_then_download_again_resumes_cleanly(tmp_path, monk
 
         def run(tag, cancel):
             try:
-                service.download("m", lambda d, t: None, cancel)
+                service.download("fake", lambda d, t: None, cancel)
                 results[tag] = "ok"
             except Cancelled:
                 results[tag] = "cancelled"
@@ -277,7 +256,7 @@ def test_cancel_inside_a_read_then_download_again_resumes_cleanly(tmp_path, monk
 
         first = threading.Thread(target=run, args=("first", first_cancel))
         first.start()
-        part = models.model_path("m", service.folder) / "model.bin.part"
+        part = models.model_path("fake", service.folder) / "model.bin.part"
         assert wait_for(lambda: part.exists() and part.stat().st_size >= 256 << 10, 10)
         time.sleep(0.1)  # inside the next read
         first_cancel.set()
@@ -286,7 +265,8 @@ def test_cancel_inside_a_read_then_download_again_resumes_cleanly(tmp_path, monk
         first.join(15)
         second.join(30)
         assert results == {"first": "cancelled", "second": "ok"}
-        assert (models.model_path("m", service.folder) / "model.bin").read_bytes() == data
-        assert server.ranges[0] is None and server.ranges[-1] is not None  # it resumed
+        assert (models.model_path("fake", service.folder) / "model.bin").read_bytes() == data
+        ranges = [rng for _path, rng in server.requests]
+        assert ranges[0] is None and ranges[-1] is not None  # it resumed
     finally:
         server.close()
