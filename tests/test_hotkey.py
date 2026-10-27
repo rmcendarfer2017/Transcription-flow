@@ -2,6 +2,7 @@
 
 import ctypes
 import threading
+import time
 
 import pytest
 
@@ -189,8 +190,9 @@ class FakeHook:
 
 
 class FakeRepeat:
-    def __init__(self, gap=0.2, down=None):
+    def __init__(self, gap=0.2, down=None, locked=None):
         self.gap_value, self.down, self.asked = gap, down, []
+        self.locked = locked
 
     def gap(self):
         return self.gap_value
@@ -198,6 +200,9 @@ class FakeRepeat:
     def is_down(self, vk):
         self.asked.append(vk)
         return self.down
+
+    def desktop_locked(self):
+        return self.locked
 
 
 @pytest.fixture
@@ -270,6 +275,29 @@ def test_a_suppressed_key_without_repeat_is_reported_unchecked():
     try:
         hook.handles[-1].put((DOWN, True))
         assert wait_for(lambda: flags == [True])
+    finally:
+        key.stop()
+
+
+def test_an_unchecked_hold_ends_when_the_lock_screen_takes_the_input():
+    """review-m2 N3: F9 with Filter Keys repeat off, then the PC locks."""
+    log, hook, repeat = [], FakeHook(), FakeRepeat(gap=None)
+    key = Hotkey(lambda unchecked: log.append(("press", unchecked)), lambda: log.append("up"),
+                 log.append, hook=hook, poll=0.01, repeat=repeat)
+    key.start("f9")
+    try:
+        hook.handles[-1].put((DOWN, True))
+        assert wait_for(lambda: log == [("press", True)])
+        time.sleep(0.05)
+        assert log == [("press", True)]  # unknown is not "released"
+        repeat.locked = True
+        assert wait_for(lambda: MISSED_RELEASE in log, timeout=3)
+        assert log == [("press", True), MISSED_RELEASE]
+        repeat.locked = None
+        hook.handles[-1].put((UP, True))  # the release after the unlock types nothing
+        hook.handles[-1].put((DOWN, True))
+        assert wait_for(lambda: log[-1] == ("press", True))
+        assert "up" not in log
     finally:
         key.stop()
 
@@ -454,6 +482,60 @@ def gap(**kw):
     return WindowsKeyRepeat(FakeUser32(**kw)).gap()
 
 
+class DesktopUser32:
+    def __init__(self, open_handle=7, switch=1, fail=False, error=hk.ERROR_ACCESS_DENIED):
+        self.open_handle, self.switch, self.fail = open_handle, switch, fail
+        self.error = error  # GetLastError after a failed OpenInputDesktop
+        self.calls = []
+
+    def OpenInputDesktop(self, flags, inherit, access):  # noqa: N802
+        if self.fail:
+            raise OSError("no user32")
+        self.calls.append(("open", flags, inherit, access))
+        return self.open_handle
+
+    def SwitchDesktop(self, handle):  # noqa: N802
+        self.calls.append(("switch", handle))
+        return self.switch
+
+    def CloseDesktop(self, handle):  # noqa: N802
+        self.calls.append(("close", handle))
+        return 1
+
+
+@pytest.mark.parametrize("api, locked", [
+    (DesktopUser32(), False),  # our desktop has the input
+    (DesktopUser32(open_handle=0), True),  # the lock screen: access denied
+    (DesktopUser32(open_handle=0, error=1450), None),  # another failure: unknown (F7)
+    (DesktopUser32(switch=0), True),  # opened, but switching fails: locked
+    (DesktopUser32(fail=True), None),  # unknown
+])
+def test_desktop_locked(api, locked):
+    assert WindowsKeyRepeat(api, last_error=lambda: api.error).desktop_locked() is locked
+
+
+def test_a_lasting_desktop_error_is_logged_once_without_cancelling(caplog):
+    api = DesktopUser32(open_handle=0, error=1450)
+    repeat = WindowsKeyRepeat(api, last_error=lambda: api.error)
+    assert repeat.desktop_locked() is None and repeat.desktop_locked() is None
+    assert caplog.text.count("lock screen can't be detected here (error 1450)") == 1
+
+
+def test_no_windows_api_means_the_desktop_is_unknown(monkeypatch):
+    monkeypatch.delattr(ctypes, "WinDLL", raising=False)
+    assert WindowsKeyRepeat().desktop_locked() is None
+
+
+def test_desktop_locked_asks_for_switch_access_and_closes_the_handle():
+    api = DesktopUser32()
+    WindowsKeyRepeat(api).desktop_locked()
+    assert api.calls == [("open", 0, False, hk.DESKTOP_SWITCHDESKTOP), ("switch", 7),
+                         ("close", 7)]
+    api = DesktopUser32(switch=0)
+    WindowsKeyRepeat(api).desktop_locked()
+    assert api.calls[-1] == ("close", 7)
+
+
 def test_gap_math():
     assert hk.repeat_gap(0.25, 0.033) == 1.5  # fast settings: the floor
     assert hk.repeat_gap(2.0, 0.5) == 2.5  # the longer wait plus the margin
@@ -505,7 +587,7 @@ def test_unreadable_settings_give_the_floor():
 
 
 def test_no_windows_api_gives_the_floor_and_no_key_state(monkeypatch):
-    monkeypatch.delattr(ctypes, "windll", raising=False)
+    monkeypatch.delattr(ctypes, "WinDLL", raising=False)
     repeat = WindowsKeyRepeat()
     assert repeat.gap() == hk.MIN_REPEAT_GAP and repeat.is_down(0xA3) is None
 

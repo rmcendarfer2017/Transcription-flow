@@ -151,6 +151,11 @@ class WindowsClipboard:
         finally:
             self._close()
         if error is not None:  # we emptied the clipboard, so it changed
+            # Read after CloseClipboard: an app that writes in the few
+            # microseconds between the close and this read gets its copy
+            # overwritten by the restore. Accepted (review-m2 R2): reading
+            # inside the open is worse if Windows bumps the number at close,
+            # since every part-way failure would then skip the restore.
             error.seq = self.sequence()
             raise error
 

@@ -22,7 +22,8 @@ def write(path, data):
 
 
 GOOD = {"version": 1, "hotkey": "f9", "model": "base.en", "language": "en",
-        "output": "paste", "keep_mic_warm": True, "paste_settle_seconds": 1.5}
+        "output": "paste", "keep_mic_warm": True, "mic": "Headset mic",
+        "paste_settle_seconds": 1.5}
 
 
 def test_missing_file_gives_defaults(cfg_path):
@@ -56,6 +57,7 @@ def test_a_good_file_loads_without_warnings(cfg_path, caplog):  # the PASS contr
     ("hotkey", "right_alt"), ("hotkey", "right_shift"),  # no longer offered (F4)
     ("paste_settle_seconds", 0.05), ("paste_settle_seconds", 6), ("paste_settle_seconds", True),
     ("paste_settle_seconds", "1"), ("paste_settle_seconds", [1]),
+    ("mic", None), ("mic", 3), ("mic", ["Headset mic"]), ("mic", "m" * 257),
 ])
 def test_each_invalid_value_alone_falls_back_to_its_default(cfg_path, caplog, key, bad):
     write(cfg_path, {**GOOD, key: bad})

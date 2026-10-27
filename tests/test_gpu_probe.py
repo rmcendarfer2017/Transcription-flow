@@ -130,3 +130,27 @@ def test_probe_child_ignores_modules_in_the_working_directory(tmp_path):
                           capture_output=True, text=True, timeout=120,
                           env=gpu_probe._child_env(), stdin=subprocess.DEVNULL)
     assert "SHADOWED" not in done.stdout and done.returncode != 99, done.stderr[-2000:]
+
+
+def test_the_probe_child_counts_a_dropped_stock_phrase_as_a_working_gpu(monkeypatch, capsys):
+    """Whisper may "hear" a "you" in the probe's silence; the filter then
+    drops it with ShortPhraseDropped, and CUDA still worked."""
+    import ctranslate2
+
+    from transcription_flow import engine
+    from transcription_flow.hallucination import ShortPhraseDropped
+
+    class Hears:
+        def __init__(self, model_dir, device):
+            assert device == "cuda"
+
+        def load(self):
+            return self
+
+        def transcribe(self, audio):
+            raise ShortPhraseDropped()
+
+    monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: 1)
+    monkeypatch.setattr(engine, "WhisperEngine", Hears)
+    assert gpu_probe.run_child("m") == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True

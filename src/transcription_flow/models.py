@@ -53,6 +53,12 @@ def _spec(name: str, manifest: dict) -> dict:
         raise ModelError(f"Unknown model {name!r}.") from None
 
 
+def size_label(size: int) -> str:
+    """Bytes as the user reads them: "484 MB", "1.5 GB"."""
+    mb = size / 1e6
+    return f"{mb / 1000:.1f} GB" if mb >= 1000 else f"{mb:.0f} MB"
+
+
 def model_path(name: str, models_dir: Path) -> Path:
     return Path(models_dir) / name
 
@@ -96,10 +102,11 @@ class _NoDowngradeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
+def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes, before_write) -> None:
     """Download url into part, resuming from part's current length. Reports
     the bytes already on disk to on_bytes, and takes them back on a restart.
-    Never writes more than size bytes (review F1)."""
+    Never writes more than size bytes (review F1). ``before_write()`` runs
+    before each block is written, so a cancel stops before it (review-m3 F2)."""
     have = part.stat().st_size if part.exists() else 0
     if have > size:
         part.unlink()
@@ -118,7 +125,7 @@ def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
         if err.code == 416 and have:  # range not satisfiable: start over
             part.unlink()
             on_bytes(-have)
-            return _fetch(url, part, size, timeout, on_bytes)
+            return _fetch(url, part, size, timeout, on_bytes, before_write)
         raise DownloadError(f"The download failed (HTTP {err.code}).") from None
     except (OSError, http.client.HTTPException) as err:  # URLError is an OSError
         raise DownloadError(f"The download failed: {_reason(err)}.") from None
@@ -134,6 +141,7 @@ def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
                     block = response.read(min(CHUNK, remaining))
                     if not block:
                         break
+                    before_write()
                     out.write(block)
                     remaining -= len(block)
                     on_bytes(len(block))
@@ -152,11 +160,13 @@ def _reason(err: Exception) -> str:
 
 
 def download(name: str, models_dir: Path, progress=None, base_url: str = DEFAULT_BASE_URL,
-             timeout: float = 30.0, manifest=None, verify: bool = False) -> Path:
+             timeout: float = 30.0, manifest=None, verify: bool = False,
+             before_write=None) -> Path:
     """Download and verify a model; returns its folder.
 
     progress(done_bytes, total_bytes) is called as bytes arrive (also with the
-    bytes already on disk). Partial files are kept as ``<name>.part`` so a
+    bytes already on disk). before_write() runs before each block is written
+    and may raise to stop. Partial files are kept as ``<name>.part`` so a
     later call resumes them. verify=True re-hashes an installed model instead
     of trusting its marker and sizes, and downloads any file that fails.
     Raises DownloadError or ChecksumError.
@@ -199,7 +209,7 @@ def download(name: str, models_dir: Path, progress=None, base_url: str = DEFAULT
         final.unlink(missing_ok=True)
         part = folder / (f["name"] + ".part")
         url = f"{base_url.rstrip('/')}/{spec['repo']}/resolve/{spec['revision']}/{f['name']}"
-        _fetch(url, part, f["size"], timeout, on_bytes)
+        _fetch(url, part, f["size"], timeout, on_bytes, before_write or (lambda: None))
         actual_size = part.stat().st_size if part.exists() else 0
         if actual_size < f["size"]:
             raise DownloadError("The download was interrupted. Try again to resume it.")

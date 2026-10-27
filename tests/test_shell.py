@@ -6,12 +6,14 @@ import sys
 import pytest
 
 from transcription_flow import app as app_mod
-from transcription_flow import config
+from transcription_flow import config, models
 from transcription_flow.app import App
+from transcription_flow.model_service import Cancelled
 from transcription_flow.config import Config
 from transcription_flow.hotkey import MISSED_RELEASE, HotkeyUnavailable
 from transcription_flow.ui import display
-from transcription_flow.ui.settings import Form, hotkey_choices, model_choices
+from transcription_flow.ui.settings import (MODEL_NOTE, Form, hotkey_choices, model_choices,
+                                            model_note)
 from transcription_flow.ui.tray import Tray, TrayActions, make_icon
 
 # -- display --------------------------------------------------------------------
@@ -231,11 +233,27 @@ def test_form_fixes_a_language_the_model_cannot_use():
     assert form.to_config().language == "en"
 
 
-def test_model_choices_are_sized_and_mark_the_default():
-    labels_ = model_choices()
+def test_model_choices_are_sized_and_mark_the_default(tmp_path):
+    from transcription_flow.model_service import ModelService
+
+    labels_ = model_choices(ModelService(tmp_path))
     assert list(labels_) == ["tiny.en", "base.en", "small.en"]  # smallest first
     assert labels_["small.en"].endswith("MB, recommended)")
     assert "recommended" not in labels_["tiny.en"]
+
+
+def test_the_settings_note_warns_that_save_downloads_the_model_after_a_fallback(tmp_path):
+    """review-m3 F5: base.en chosen, small.en running: any Save fetches base.en."""
+    from transcription_flow.model_service import ModelService
+
+    service = ModelService(tmp_path)
+    assert model_note(Config(model="small.en"), "small.en", service) == MODEL_NOTE
+    assert model_note(Config(model="small.en"), None, service) == MODEL_NOTE  # the setup window
+    note = model_note(Config(model="base.en"), "small.en", service)
+    assert note.startswith(MODEL_NOTE) and note.endswith(
+        "base.en isn't ready, so dictation uses small.en for now. Save downloads base.en "
+        f"({models.size_label(service.size('base.en'))}) even if you change only something "
+        "else; pick small.en above to keep it instead.")
 
 
 def test_hotkey_choices_are_the_hotkey_table():
@@ -268,6 +286,12 @@ class FakeController:
 
     def set_keep_warm(self, on):
         self.calls.append(("keep_warm", on))
+
+    def set_microphone(self, device):
+        self.calls.append(("mic", device))
+
+    def set_transcriber(self, engine):
+        self.calls.append(("engine", engine))
 
 
 class FakeHotkey:
@@ -342,23 +366,107 @@ class FakeSettings:
         self.on_close()
 
 
+SIZES = {"tiny.en": 77_000_000, "base.en": 145_000_000, "small.en": 484_000_000}
+
+
+class FakeModels:
+    """ModelService's interface; download() reports 50% then finishes or fails."""
+
+    def __init__(self, folder):
+        self.folder = folder
+        self.have = {"small.en"}
+        self.calls = []
+        self.fail = self.load_fail = None
+        self.before_finish = None  # runs at 50%, like a user acting mid-download
+
+    def names(self):
+        return list(SIZES)
+
+    def size(self, name):
+        return SIZES[name]
+
+    def is_installed(self, name):
+        return name in self.have
+
+    def installed(self):
+        return [n for n in SIZES if n in self.have]
+
+    def failed_to_load(self, name):
+        return False
+
+    def needs_download(self, name):
+        return name not in self.have
+
+    def smaller_than(self, name):
+        i = list(SIZES).index(name)
+        return list(SIZES)[i - 1] if i else None
+
+    def download(self, name, progress, cancel):
+        self.calls.append(("download", name))
+        progress(50, 100)
+        progress(50, 100)  # the same percent again: no new UI work
+        if self.before_finish:
+            self.before_finish()
+        if cancel.is_set():
+            raise Cancelled()
+        if self.fail:
+            raise self.fail
+        progress(100, 100)
+        self.have.add(name)
+
+    def load(self, name, language):
+        self.calls.append(("load", name, language))
+        if self.load_fail:
+            raise self.load_fail
+        return f"engine:{name}:{language}"
+
+
+class FakeWizard:
+    def __init__(self, app, on_close):
+        self.app, self.on_close = app, on_close
+        self.events, self.lifted, self.closed = [], 0, False
+
+    def model_changed(self, error=None):
+        self.events.append(error)
+
+    def lift(self):
+        self.lifted += 1
+
+    def close(self):
+        self.closed = True
+        self.on_close()
+
+
 @pytest.fixture
 def shell(tmp_path):
     parts = {"ctl": FakeController(), "hk": FakeHotkey(), "run": FakeRunKey(), "ui": [],
-             "stopped": [], "opened": [], "windows": [], "path": tmp_path / "config.json"}
+             "stopped": [], "opened": [], "windows": [], "wizards": [], "jobs": [],
+             "models": FakeModels(tmp_path / "models"), "path": tmp_path / "config.json"}
 
     def settings_factory(*args):
         window = FakeSettings(*args)
         parts["windows"].append(window)
         return window
 
+    def wizard_factory(*args):
+        window = FakeWizard(*args)
+        parts["wizards"].append(window)
+        return window
+
     a = App(Config(), parts["path"], parts["ctl"], parts["hk"], FakeTray, parts["run"],
             ui_call=lambda fn: (parts["ui"].append(fn), fn()), stop_ui=lambda: parts[
                 "stopped"].append(True), settings_factory=settings_factory,
             output_factory=lambda mode: f"output:{mode}", launch_command=lambda: '"tf.exe" --tray',
-            log_dir=tmp_path / "logs", opener=parts["opened"].append, device="cpu")
+            log_dir=tmp_path / "logs", opener=parts["opened"].append, device="cpu",
+            models=parts["models"], model="small.en", language="en",
+            wizard_factory=wizard_factory, spawn=parts["jobs"].append)
     parts["tray"] = a._tray
     return a, parts
+
+
+def run_job(p):
+    """Run the background job the app spawned, as its thread would."""
+    p["jobs"].pop(0)()
 
 
 def test_start_installs_the_hotkey_starts_the_tray_and_says_ready(shell):
@@ -505,11 +613,266 @@ def test_saving_keeps_a_hand_edited_paste_settle(shell):
     assert config.load(p["path"]) == Config(output="paste", paste_settle_seconds=2.0)
 
 
-def test_a_model_change_is_saved_for_the_next_start_only(shell):
+def test_a_model_change_downloads_with_progress_then_switches_live(shell):
+    """review-m2 F6: no longer saved for the next start only."""
     a, p = shell
     save(a, p, model="base.en")
     assert config.load(p["path"]).model == "base.en"
-    assert p["ctl"].calls == [] and p["hk"].calls == []
+    assert p["tray"].notes[-1] == ("Downloading the base.en model (145 MB). small.en works "
+                                   "until it's ready.")
+    assert p["tray"].statuses[-1][0] == "Downloading base.en 0%"
+    assert a.model == "small.en" and p["ctl"].calls == []  # the old one keeps working
+    statuses = len(p["tray"].statuses)
+    p["models"].before_finish = lambda: p["tray"].statuses.append(("at 50", None))
+    run_job(p)
+    assert p["tray"].statuses[statuses][0] == "Downloading base.en 50%"
+    assert p["tray"].statuses[statuses + 1] == ("at 50", None)  # one refresh for two 50s
+    assert p["models"].calls == [("download", "base.en"), ("load", "base.en", "en")]
+    assert p["ctl"].calls == [("engine", "engine:base.en:en")]
+    assert a.model == "base.en" and a.job is None
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+    assert p["tray"].notes[-1] == "Ready with base.en. Hold Right Ctrl to dictate."
+
+
+def test_an_installed_model_is_loaded_without_a_download(shell):
+    a, p = shell
+    p["models"].have.add("tiny.en")
+    save(a, p, model="tiny.en")
+    assert p["tray"].statuses[-1][0] == "Loading tiny.en"
+    assert not any("Downloading" in n for n in p["tray"].notes)
+    run_job(p)
+    assert p["models"].calls == [("load", "tiny.en", "en")] and a.model == "tiny.en"
+
+
+def test_a_failed_download_keeps_the_old_model_and_says_so(shell):
+    a, p = shell
+    a.open_wizard()
+    p["models"].fail = models.DownloadError("The download failed: offline.")
+    save(a, p, model="base.en")
+    run_job(p)
+    assert a.model == "small.en" and a.job is None and p["ctl"].calls == []
+    assert p["tray"].statuses[-1][0] == ("Error: The download failed: offline. Still using "
+                                         "small.en.")
+    assert p["wizards"][0].events[-1] == "The download failed: offline."
+    p["models"].fail = None
+    a.retry_model()  # the wizard's Retry
+    run_job(p)
+    assert a.model == "base.en"
+
+
+def test_a_model_that_fails_to_load_names_the_error_type_only(shell, caplog):
+    a, p = shell
+    p["models"].have.add("tiny.en")
+    p["models"].load_fail = RuntimeError("secret path C:/Users/someone")
+    save(a, p, model="tiny.en")
+    run_job(p)
+    assert p["tray"].notes[-1] == ("The tiny.en model could not be loaded (RuntimeError). "
+                                   "Still using small.en.")
+
+
+def test_a_newer_choice_cancels_the_older_download_and_a_late_finish_is_ignored(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    first = a.job
+    p["models"].have.add("tiny.en")
+    save(a, p, model="tiny.en")
+    assert first.cancel.is_set() and a.job.name == "tiny.en"
+    run_job(p)  # the base.en thread sees the cancel: nothing happens
+    assert p["ctl"].calls == [] and a.model == "small.en"
+    run_job(p)
+    assert a.model == "tiny.en" and p["ctl"].calls == [("engine", "engine:tiny.en:en")]
+    a._job_done(first, "late engine")  # a stale finish from the first job
+    assert a.model == "tiny.en" and len(p["ctl"].calls) == 1
+
+
+def test_saving_the_same_choice_again_does_not_restart_the_download(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    job = a.job
+    save(a, p, model="base.en")
+    assert a.job is job and len(p["jobs"]) == 1 and not job.cancel.is_set()
+
+
+def test_saving_with_no_model_change_starts_no_job(shell):
+    """review-m3 R8: a Save that keeps the running model doesn't reload it."""
+    a, p = shell
+    save(a, p, hotkey="f9")
+    assert a.job is None and p["jobs"] == [] and p["models"].calls == []
+
+
+def test_switching_back_to_the_running_model_mid_download_clears_the_progress(shell):
+    """QA B1: the tray and the setup window drop the cancelled download."""
+    a, p = shell
+    a.open_wizard()
+    save(a, p, model="base.en")
+    assert p["tray"].statuses[-1][0] == "Downloading base.en 0%"
+    events = len(p["wizards"][0].events)
+    save(a, p, model="small.en")  # changed their mind: back to the running model
+    assert a.job is None and len(p["jobs"]) == 1
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+    assert len(p["wizards"][0].events) == events + 1
+
+
+def test_a_replaced_job_that_fails_late_leaves_the_new_one_alone(shell):
+    """review-m3 R6: the old job's late failure must not clear the new job,
+    or the new job's success would then be ignored."""
+    a, p = shell
+    save(a, p, model="base.en")
+    first = a.job
+    p["models"].have.add("tiny.en")
+    save(a, p, model="tiny.en")
+    second = a.job
+    a._job_failed(first, "The download failed: offline.")
+    assert a.job is second and p["tray"].statuses[-1][0] == "Loading tiny.en"
+    assert not any(n.startswith("The download failed") for n in p["tray"].notes)
+    run_job(p)  # base.en: cancelled
+    run_job(p)
+    assert a.model == "tiny.en" and a.job is None
+
+
+def test_cancel_download_stops_it_quietly(shell):
+    a, p = shell
+    a.open_wizard()
+    save(a, p, model="base.en")
+    p["models"].before_finish = a.cancel_download
+    run_job(p)
+    assert a.job is None and a.model == "small.en" and p["ctl"].calls == []
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+    assert not any(n.startswith("Error") for n, _ in p["tray"].statuses)
+
+
+def test_a_language_change_reloads_the_same_model(shell):
+    a, p = shell
+    a.use_model("small.en", "de")  # as if multilingual
+    run_job(p)
+    assert p["models"].calls == [("load", "small.en", "de")]
+
+
+def test_a_setup_window_change_never_starts_a_model_download(first_run):
+    """Picking a mic or a key on the first run must not fetch ~500 MB."""
+    a, p = first_run
+    a.update_config(dataclasses.replace(a.config, mic="Headset mic"))
+    a.update_config(dataclasses.replace(a.config, hotkey="f9"))
+    assert a.job is None and p["jobs"] == [] and p["models"].calls == []
+
+
+def test_settings_save_fetches_the_configured_model_the_start_fell_back_from(shell):
+    """The start-up toast says: open Settings and press Save to download it."""
+    a, p = shell
+    a.config = Config(model="base.en")
+    save(a, p)
+    assert a.job is not None and a.job.name == "base.en"
+
+
+def test_a_notice_is_a_toast_not_an_error(shell):
+    a, p = shell
+    a.start()
+    a.notify("The text was pasted, but part of your clipboard could not be put back.")
+    assert p["tray"].notes[-1].startswith("The text was pasted")
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+
+
+def test_download_progress_updates_the_tray_every_few_percent(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    job, before = a.job, len(p["tray"].statuses)
+    for percent in range(1, 11):
+        a._progress(job, percent, 100)
+    assert [s for s, _ in p["tray"].statuses[before:]] == ["Downloading base.en 5%",
+                                                           "Downloading base.en 10%"]
+
+
+def test_a_jump_past_a_multiple_of_five_still_updates_the_tray(shell):
+    a, p = shell
+    save(a, p, model="base.en")
+    job, before = a.job, len(p["tray"].statuses)
+    for percent in (3, 13, 17, 23):
+        a._progress(job, percent, 100)
+    assert [s for s, _ in p["tray"].statuses[before:]] == ["Downloading base.en 13%",
+                                                           "Downloading base.en 23%"]
+
+
+def test_a_mic_change_goes_to_the_controller(shell):
+    a, p = shell
+    save(a, p, mic="Headset mic")
+    save(a, p, mic="")
+    assert p["ctl"].calls == [("mic", "Headset mic"), ("mic", None)]
+    assert config.load(p["path"]).mic == ""
+
+
+# -- no model yet (first run) --------------------------------------------------
+
+@pytest.fixture
+def first_run(shell):
+    a, p = shell
+    a._model = a._language = None
+    p["models"].have.clear()
+    return a, p
+
+
+def test_first_start_opens_the_setup_window(first_run):
+    a, p = first_run
+    a.start()
+    assert len(p["wizards"]) == 1 and p["wizards"][0].app is a
+    assert p["tray"].statuses[-1][0] == "No speech model yet"
+    assert p["tray"].notes == []  # no "Ready" toast with nothing to dictate with
+
+
+def test_a_start_with_a_fallback_model_says_which_one(shell):
+    a, p = shell
+    a.config = Config(model="base.en")
+    a.start()
+    assert p["tray"].notes == ["base.en isn't downloaded yet; using small.en. Open Settings "
+                               "and press Save to download it."]
+    assert p["wizards"] == []
+
+
+def test_settings_with_no_model_is_the_setup_window_once(first_run):
+    a, p = first_run
+    a.open_settings()
+    a.open_settings()
+    assert len(p["wizards"]) == 1 and p["wizards"][0].lifted == 1 and p["windows"] == []
+    p["wizards"][0].close()
+    a.open_settings()
+    assert len(p["wizards"]) == 2
+
+
+def test_a_press_with_no_model_explains_and_records_nothing(first_run):
+    a, p = first_run
+    a.press(False)
+    assert p["ctl"].calls == [] and p["tray"].notes == [app_mod.NO_MODEL_NOTICE]
+    a.use_model("base.en", "en")
+    p["models"].before_finish = lambda: a.press(False)
+    run_job(p)
+    assert app_mod.STILL_DOWNLOADING.format(name="base.en", percent=50) in p["tray"].notes
+    assert ("press", False) not in p["ctl"].calls
+    a.press(False)  # ready now
+    assert p["ctl"].calls[-1] == ("press", False)
+
+
+def test_the_first_download_says_dictation_starts_when_ready(first_run):
+    a, p = first_run
+    a.use_model("tiny.en", "en")
+    assert p["tray"].notes[-1] == ("Downloading the tiny.en model (77 MB). Dictation starts "
+                                   "when it's ready.")
+
+
+def test_the_setup_window_hears_every_model_step(first_run):
+    a, p = first_run
+    a.open_wizard()
+    a.use_model("tiny.en", "en")
+    run_job(p)
+    events = p["wizards"][0].events
+    assert events == [None, None, None, None]  # started, 50%, 100%, ready
+    assert a.model == "tiny.en"
+
+
+def test_open_models_folder_and_mic_privacy(shell, tmp_path):
+    a, p = shell
+    a.open_models_folder()
+    a.open_mic_privacy()
+    assert p["opened"] == [tmp_path / "models", "ms-settings:privacy-microphone"]
+    assert (tmp_path / "models").is_dir()
 
 
 def test_autostart_off_deletes_the_value_and_on_rewrites_it(shell):
@@ -544,6 +907,15 @@ def test_a_settings_file_that_cannot_be_written_is_reported(shell, tmp_path):
     a._config_path = a._config_path / "config.json"  # parent is a file
     save(a, p, output="paste")
     assert "The settings could not be saved." in p["tray"].notes
+
+
+def test_quit_cancels_a_download_and_closes_the_setup_window(shell):
+    a, p = shell
+    a.open_wizard()
+    save(a, p, model="base.en")
+    job = a.job
+    a.quit()
+    assert job.cancel.is_set() and a.job is None and p["wizards"][0].closed
 
 
 def test_quit_stops_hotkey_tray_settings_and_the_ui(shell):

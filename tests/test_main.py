@@ -274,16 +274,6 @@ def test_tray_flag_is_accepted():
     assert app._parser().parse_args(["--tray"]).tray is True
 
 
-def test_first_run_download_failure_exits_2(monkeypatch, capsys):
-    def fail(*a, **k):
-        raise models.DownloadError("The download failed: offline.")
-
-    monkeypatch.setattr(models, "download", fail)
-    assert app.main(["--model", "tiny.en"]) == 2
-    assert "offline" in capsys.readouterr().err
-    single_instance.acquire(paths.data_dir()).release()  # the guard was released
-
-
 def test_dictation_shim_runs_main():
     root = Path(transcription_flow.__file__).resolve().parents[2]
     out = subprocess.run([sys.executable, str(root / "dictation.py"), "--version"],

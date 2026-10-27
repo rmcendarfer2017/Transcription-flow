@@ -77,9 +77,13 @@ def run_child(model_dir: Path) -> int:
     import numpy as np
 
     from .engine import WhisperEngine
+    from .hallucination import ShortPhraseDropped
 
     engine = WhisperEngine(model_dir, device="cuda").load()
-    engine.transcribe(np.zeros(16000, dtype=np.float32))
+    try:
+        engine.transcribe(np.zeros(16000, dtype=np.float32))
+    except ShortPhraseDropped:  # a "you" heard in the silence: CUDA still ran
+        pass
     print(json.dumps({"ok": True, "reason": "CUDA transcription worked"}), flush=True)
     return 0
 

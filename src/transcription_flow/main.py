@@ -2,6 +2,7 @@
 __init__ has already applied the privacy environment (_env)."""
 
 import argparse
+import dataclasses
 import functools
 import json
 import logging
@@ -40,8 +41,8 @@ def _parser() -> argparse.ArgumentParser:
                    help="transcribe WAV on CPU, print JSON, exit 0 (ok) or 1")
     p.add_argument("--expect", help="with --selftest: text the transcript must contain")
     p.add_argument("--tray", action="store_true",
-                   help="started at sign-in: stay in the tray (the M3 first-run window skips "
-                        "itself)")
+                   help="started at sign-in: start quietly in the tray (the setup window "
+                        "still opens while no model is installed)")
     p.add_argument("--reset-config", action="store_true",
                    help="put every setting back to its default, then exit")
     p.add_argument("--probe-gpu", action="store_true", help=argparse.SUPPRESS)
@@ -109,7 +110,7 @@ def _notify(message: str, exc_info: bool = False) -> None:
 def run_app(args, models_dir: Path) -> int:
     """Everything that writes app.log or the settings: the single-instance
     guard comes first, so a second copy never opens the log (review-m1)."""
-    from . import config, logsetup, models, paths, single_instance
+    from . import config, logsetup, paths, single_instance
 
     try:
         guard = single_instance.acquire(paths.data_dir())
@@ -125,45 +126,67 @@ def run_app(args, models_dir: Path) -> int:
             print(f"Settings reset: {paths.config_file()}")
             return EXIT_OK
         settings = config.load(paths.config_file())
-        name = args.model or settings.model
+        if args.model:  # this run only; Settings saves it if the user saves
+            settings = dataclasses.replace(
+                settings, model=args.model,
+                language=config.language_for(args.model, settings.language))
         if args.download_model or args.verify:
-            folder = _download(name, models_dir, verify=args.verify)
+            folder = _download(settings.model, models_dir, verify=args.verify)
             if folder is None:
                 return EXIT_SETUP
             print(folder)
             return EXIT_OK
-        model_dir = args.model_dir or models.model_path(name, models_dir)
-        if args.model_dir is None and not models.is_installed(name, models_dir):
-            print(f"First run: downloading the {name} model (one time only).", file=sys.stderr)
-            if _download(name, models_dir) is None:
-                return EXIT_SETUP
-        return _run_dictation(args, settings, model_dir, log_file)
+        return _run_dictation(args, settings, models_dir, log_file)
     finally:
         guard.release()
 
 
-def _run_dictation(args, settings, model_dir, log_file) -> int:
+def _first_model(args, settings, service):
+    """(name, language, folder) to start with; name None when no model is
+    installed. Never downloads: an offline start must still start (QA B3).
+    A model that failed to load gives way to the next (QA B2)."""
+    from . import config
+
+    if args.model_dir is not None:
+        if service.failed_to_load(settings.model):
+            return None, settings.language, None
+        return settings.model, settings.language, args.model_dir
+    name = service.startup_choice(settings.model)
+    if name is None:
+        return None, settings.language, None
+    if name != settings.model:
+        log.warning("%s is not downloaded; starting with %s", settings.model, name)
+    return name, config.language_for(name, settings.language), service.folder / name
+
+
+def _run_dictation(args, settings, models_dir, log_file) -> int:
     from . import autostart, gpu_probe, paths
     from .app import App
     from .controller import Controller
-    from .engine import WhisperEngine
     from .hotkey import Hotkey, HotkeyUnavailable
+    from .model_service import ModelService
     from .output import make_output
-    from .recorder import MicrophoneError, Recorder
+    from .recorder import LevelMeter, MicrophoneError, Recorder, input_devices
     from .ui import display
 
-    device = gpu_probe.choose_device(args.device, model_dir, paths.data_dir() / "gpu_probe.json")
-    language = None if settings.language == "auto" else settings.language
-    try:
-        engine = WhisperEngine(model_dir, device=device, language=language).load()
-    except Exception as err:
-        _notify(f"The speech model could not be loaded ({type(err).__name__}). Log: {log_file}",
-                exc_info=True)
-        return EXIT_SETUP
+    service = ModelService(models_dir)
+    name, language, model_dir = _first_model(args, settings, service)
+    service.device = (gpu_probe.choose_device(args.device, model_dir,
+                                              paths.data_dir() / "gpu_probe.json")
+                      if model_dir is not None else "cpu")
+    startup_errors = []
+    engine = None
+    while name is not None:  # a model that fails to load gives way to the next (QA B2)
+        try:
+            engine = service.load(name, language, model_dir)
+            break
+        except Exception as err:  # keep running: Settings or the setup window can fetch it again
+            _notify(f"The {name} speech model could not be loaded ({type(err).__name__}). "
+                    f"Log: {log_file}", exc_info=True)
+            name, language, model_dir = _first_model(args, settings, service)
 
     keep_warm = args.keep_mic_warm or settings.keep_mic_warm
-    recorder = Recorder(keep_warm=keep_warm)
-    startup_errors = []
+    recorder = Recorder(device=settings.mic or None, keep_warm=keep_warm)
     try:
         recorder.check()
         if keep_warm:
@@ -176,6 +199,7 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         from .ui.overlay import Overlay
         from .ui.settings import SettingsWindow
         from .ui.tray import Tray
+        from .ui.wizard import WizardWindow
 
         overlay = Overlay(recorder.levels)
     except Exception as err:
@@ -199,15 +223,18 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
     # The settle is a file-only setting, read at start.
     output_factory = functools.partial(make_output, settle=settings.paste_settle_seconds)
     controller = Controller(recorder, engine, output_factory(settings.output), ui=on_state,
-                            on_error=report)
+                            on_error=report, on_notice=lambda message: app.notify(message))
     controller.start()
     app = App(settings, paths.config_file(), controller,
               Hotkey(lambda unchecked: app.press(unchecked), controller.release,
                      lambda r: app.cancel_recording(r)),
               Tray, autostart.RunKey(), ui_call=overlay.call, stop_ui=overlay.quit,
-              settings_factory=lambda *a: SettingsWindow(overlay.root, *a),
+              settings_factory=lambda *a: SettingsWindow(overlay.root, *a, app=app),
+              wizard_factory=lambda *a: WizardWindow(overlay.root, *a),
               output_factory=output_factory,
-              launch_command=autostart.launch_command, log_dir=paths.logs_dir(), device=device)
+              launch_command=autostart.launch_command, log_dir=paths.logs_dir(),
+              device=service.device, models=service, model=name, language=language,
+              mic_list=input_devices, meter_factory=lambda device: LevelMeter(device=device))
     try:
         app.start()
     except HotkeyUnavailable as err:
@@ -216,8 +243,8 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         return EXIT_SETUP
     for message in startup_errors:
         app.report_error(message)
-    log.info("ready on %s", device)
-    if sys.stderr is not None:
+    log.info("ready on %s with %s", service.device, name or "no model yet")
+    if sys.stderr is not None and name is not None:
         print(f"Ready. Hold {app.hotkey_label()} to dictate, release to type the text. "
               "Quit from the tray icon.", file=sys.stderr)
     try:

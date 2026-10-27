@@ -12,6 +12,8 @@ import queue
 import threading
 import traceback
 
+from .hallucination import ShortPhraseDropped
+from .output import OutputWarning
 from .recorder import TARGET_RATE, MicrophoneError
 
 log = logging.getLogger(__name__)
@@ -38,13 +40,16 @@ def _thread_timer(seconds, callback):
 
 
 class Controller:
-    def __init__(self, recorder, transcriber, output, ui=None, on_error=None,
+    def __init__(self, recorder, transcriber, output, ui=None, on_error=None, on_notice=None,
                  timer=_thread_timer, min_seconds=MIN_SECONDS, max_seconds=MAX_SECONDS):
+        """``on_notice(message)``: something the user should hear about that
+        isn't an error (default: on_error)."""
         self._recorder = recorder
         self._transcriber = transcriber
         self._output = output
         self._ui = ui or (lambda state: None)
         self._on_error = on_error or (lambda message: None)
+        self._on_notice = on_notice or self._on_error
         self._timer = timer
         self._min_seconds = min_seconds
         self._max_seconds = max_seconds
@@ -53,6 +58,7 @@ class Controller:
         self._paused = False
         self._cap_timer = None
         self._recording_id = 0  # the cap timer's token (review F8)
+        self._mic_changed = False  # a warm stream reopens on the new mic when idle
         self._jobs = queue.Queue()
         self._worker = None
 
@@ -123,6 +129,11 @@ class Controller:
             if paused and self._cancel():
                 log.info("recording cancelled: dictation paused")
 
+    def set_transcriber(self, transcriber) -> None:
+        """A newly loaded model; the clip being transcribed finishes on the old one."""
+        with self._lock:  # the worker reads it once per clip
+            self._transcriber = transcriber
+
     def set_output(self, output) -> None:
         with self._lock:  # the worker reads it once per clip
             self._output = output
@@ -142,6 +153,16 @@ class Controller:
             else:
                 self._recorder.close()
 
+    def set_microphone(self, device) -> None:
+        """Use another microphone (a name, or None for the default) from the
+        next recording. A warm stream reopens on it now, or when the
+        recording or transcription in progress ends (review-m3 F6)."""
+        with self._lock:
+            self._recorder.device = device
+            self._mic_changed = True
+            if self._state is State.IDLE:
+                self._reopen_mic()
+
     def _cap_hit(self, rid: int, unchecked: bool) -> None:
         # Timer.cancel() can't stop a callback already waiting for the lock,
         # so a stale cap must not end a newer recording.
@@ -159,6 +180,18 @@ class Controller:
     def _set(self, state: State) -> None:
         self._state = state
         self._ui(state.value)
+        if state is State.IDLE and self._mic_changed:
+            self._reopen_mic()
+
+    def _reopen_mic(self) -> None:
+        """A warm stream moves to the newly chosen microphone."""
+        self._mic_changed = False
+        if self._recorder.is_open:
+            self._recorder.close()
+            try:
+                self._recorder.open()
+            except MicrophoneError as err:
+                self._error(err)
 
     def _cancel(self) -> bool:
         if self._state is not State.RECORDING:
@@ -201,7 +234,9 @@ class Controller:
             if audio is None:
                 return
             try:
-                text = self._transcriber.transcribe(audio)
+                with self._lock:
+                    transcriber = self._transcriber
+                text = transcriber.transcribe(audio)
                 if text:
                     log.info("transcribed %d characters", len(text))
                     with self._lock:
@@ -209,6 +244,11 @@ class Controller:
                     output.emit(text)
                 else:
                     log.info("no speech detected")
+            except OutputWarning as warning:  # the text went out: not an error
+                log.warning("%s", warning)
+                self._on_notice(str(warning))
+            except ShortPhraseDropped as dropped:  # nothing typed, on purpose (QA B4)
+                self._on_notice(str(dropped))
             except Exception as err:
                 # Type and frames only: an exception's message (or a chained
                 # one's) may hold the transcript (review F7).

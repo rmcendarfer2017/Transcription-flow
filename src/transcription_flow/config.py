@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 VERSION = 1
 SETTLE_RANGE = (0.1, 5.0)  # seconds
+MAX_MIC_NAME = 256  # device names are short (MME cuts them at 31)
 TEMP_PREFIX, TEMP_SUFFIX = ".config-", ".tmp"
 COMMON_LANGUAGES = {"en": "English", "de": "German", "es": "Spanish", "fr": "French",
                     "it": "Italian", "nl": "Dutch", "pl": "Polish", "pt": "Portuguese"}
@@ -39,6 +40,12 @@ def languages_for(model: str) -> dict:
     return {"auto": "Detect automatically", **COMMON_LANGUAGES}
 
 
+def language_for(model: str, wanted: str) -> str:
+    """``wanted`` if the model knows it, else the model's first language."""
+    choices = languages_for(model)
+    return wanted if wanted in choices else next(iter(choices))
+
+
 def model_names() -> list:
     return list(load_manifest()["models"])
 
@@ -50,6 +57,7 @@ class Config:
     language: str = "en"
     output: str = DEFAULT_OUTPUT
     keep_mic_warm: bool = False
+    mic: str = ""  # a device name; "" is the Windows default microphone
     # How long Ctrl+V gets before the clipboard is put back (review-m2 F7).
     # In the file only, for apps that read the clipboard late.
     paste_settle_seconds: float = PASTE_SETTLE_SECONDS
@@ -62,6 +70,7 @@ CHECKS = {
     "language": lambda v: isinstance(v, str),  # checked against the model below
     "output": lambda v: isinstance(v, str) and v in OUTPUT_MODES,
     "keep_mic_warm": lambda v: isinstance(v, bool),
+    "mic": lambda v: isinstance(v, str) and len(v) <= MAX_MIC_NAME,
     "paste_settle_seconds": lambda v: (isinstance(v, (int, float)) and not isinstance(v, bool)
                                        and SETTLE_RANGE[0] <= v <= SETTLE_RANGE[1]),
 }
@@ -90,7 +99,7 @@ def from_dict(data) -> Config:
     if config.language not in languages_for(config.model):
         log.warning("config: language %r does not suit %s, using the default",
                     config.language, config.model)
-        config.language = next(iter(languages_for(config.model)))
+        config.language = language_for(config.model, config.language)
     return config
 
 

@@ -32,6 +32,14 @@ class OutputError(Exception):
     """Typing or pasting failed; the message never holds the text."""
 
 
+class OutputWarning(Exception):
+    """The text went out, but something after it failed. Not a failed
+    dictation; ``str(err)`` is a message for the user."""
+
+
+RESTORE_WARNING = "The text was pasted, but part of your clipboard could not be put back."
+
+
 class PynputKeys:
     """Typing and Ctrl+V through pynput's SendInput controller."""
 
@@ -86,10 +94,12 @@ class PasteOutput:
         clip = self._clipboard
         saved = clip.save()
         ours = None  # the sequence number once our write changed the clipboard
+        pasted = False
         try:
             ours = clip.set_text(text)
             self._keys.paste()
             self._sleep(self._settle)
+            pasted = True
         except ClipboardError as err:  # only set_text raises it
             # err.seq says if set_text changed the clipboard part way. A busy
             # clipboard was never touched, and another app may have written
@@ -97,12 +107,23 @@ class PasteOutput:
             ours = err.seq
             raise
         finally:
-            # Put theirs back only while the clipboard is as we left it.
             if ours is not None:
-                if clip.sequence() == ours:
-                    clip.restore(saved)
-                else:  # someone copied something meanwhile: theirs wins
-                    log.info("clipboard changed during the paste; not restored")
+                self._restore(saved, ours, pasted)
+
+    def _restore(self, saved, ours: int, pasted: bool) -> None:
+        """Put theirs back, only while the clipboard is as we left it. A
+        restore error never hides the paste's own error, and after a good
+        paste it is a warning, not "Dictation failed" (review-m2 N2)."""
+        clip = self._clipboard
+        if clip.sequence() != ours:  # someone copied something meanwhile: theirs wins
+            log.info("clipboard changed during the paste; not restored")
+            return
+        try:
+            clip.restore(saved)
+        except ClipboardError as err:  # names format ids only, never text
+            log.warning("clipboard not fully restored: %s", err)
+            if pasted:  # nothing else is in flight
+                raise OutputWarning(RESTORE_WARNING) from None
 
 
 def make_output(mode: str, settle: float = PASTE_SETTLE_SECONDS):

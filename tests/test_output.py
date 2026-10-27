@@ -6,8 +6,8 @@ import sys
 import pytest
 
 from transcription_flow import clipboard as clip_mod
-from transcription_flow.output import (OutputError, PasteOutput, PynputKeys, TypeOutput,
-                                       make_output)
+from transcription_flow.output import (RESTORE_WARNING, OutputError, OutputWarning,
+                                       PasteOutput, PynputKeys, TypeOutput, make_output)
 
 
 class FakeKeys:
@@ -30,6 +30,7 @@ class FakeClipboard:
         self.seq = 7
         self.change_during_paste = False
         self.fail_set = None  # "untouched": fails before any change; "part way": after
+        self.fail_restore = False
 
     def save(self):
         self.log.append("save")
@@ -56,7 +57,9 @@ class FakeClipboard:
 
     def restore(self, items):
         self.log.append(("restore", items))
-        self.contents = list(items)
+        self.contents = list(items[1:] if self.fail_restore else items)
+        if self.fail_restore:
+            raise clip_mod.ClipboardError(f"1 of {len(items)} formats could not be put back")
 
 
 def paste_parts(**kw):
@@ -120,6 +123,27 @@ def test_paste_leaves_an_untouched_clipboard_alone_when_set_text_fails():
     with pytest.raises(clip_mod.ClipboardError):
         out.emit("Hello")
     assert log == ["save", ("set", "Hello")]  # no Ctrl+V, no needless rewrite
+
+
+def test_a_restore_error_after_a_good_paste_is_a_warning_not_a_failure(caplog):
+    """review-m2 N2: the text went out, so the user must not dictate again."""
+    out, clip, log = paste_parts()
+    clip.contents = [("html", b"<b>theirs</b>"), ("text", b"theirs")]
+    clip.fail_restore = True
+    with pytest.raises(OutputWarning) as caught:
+        out.emit("Hello")
+    assert str(caught.value) == RESTORE_WARNING
+    assert not isinstance(caught.value, clip_mod.ClipboardError)
+    assert "ctrl+v" in log and clip.contents == [("text", b"theirs")]
+    assert "clipboard not fully restored: 1 of 2" in caplog.text
+
+
+def test_a_restore_error_never_hides_the_paste_error(caplog):
+    out, clip, log = paste_parts(fail=True)
+    clip.fail_restore = True
+    with pytest.raises(RuntimeError, match="SendInput failed"):
+        out.emit("Hello")
+    assert "clipboard not fully restored" in caplog.text
 
 
 def test_paste_with_an_empty_clipboard_leaves_it_empty():
