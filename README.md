@@ -15,7 +15,10 @@ center of the screen while recording/transcribing.
   Hugging Face (a pinned version, checked against SHA-256 checksums). After
   that, starting the app makes no network calls.
 - onnxruntime telemetry and Hugging Face telemetry are switched off.
-- The clipboard is never touched: the text is typed, not pasted.
+- The clipboard is untouched by default: the text is typed, not pasted.
+  Paste mode (an option for apps that drop typed keys) puts the text on the
+  clipboard marked "not for clipboard history or cloud sync", pastes it, and
+  then puts your previous clipboard back.
 - The log file records timings and lengths, never what you said.
 
 ## Setup
@@ -38,30 +41,62 @@ DLLs, which pip does not install).
 
 ## Usage
 
-Hold **Right Ctrl**, speak, release. The transcription is typed at the
-current cursor position.
+Hold **Right Ctrl** (or the key you picked in Settings), speak, release. The
+transcription is typed at the current cursor position.
 
-- Pressing any other key while Right Ctrl is held (for example Right Ctrl+C)
+- Pressing any other key while the hotkey is held (for example Right Ctrl+C)
   cancels the recording, so shortcuts don't turn into dictation.
+- If the key's release is missed (focus moved to an admin window, the UAC
+  prompt or the lock screen), the recording is cancelled after about 1.5 s,
+  never typed into whatever has focus then.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
 - The microphone is opened only while you hold the hotkey, so Windows doesn't
   show the microphone as in use and Bluetooth headsets keep their full audio
-  quality. `--keep-mic-warm` keeps it open instead (slightly faster start).
-- If no microphone is found, or Windows' microphone privacy setting blocks
-  it, the app prints a clear message in its console and log instead of
-  typing nothing (tray notifications come later).
+  quality. "Keep the microphone open" in Settings (or `--keep-mic-warm`)
+  keeps it open instead and catches the first syllable.
+- Windows doesn't let normal apps send keys to windows that run as
+  administrator (Task Manager, admin terminals, some installers), so
+  dictation can't type there. Running Transcription Flow as administrator is
+  not the fix.
 - Only one copy runs at a time; a second launch exits.
+
+### The tray icon
+
+The pill icon in the notification area shows the status (Ready, Paused or
+the last problem, such as a blocked microphone) and has **Pause dictation**,
+**Settings...**, **Open log folder** and **Quit**. Problems also show as a
+Windows notification.
+
+### Settings
+
+- **Hold to dictate:** Right Ctrl (default), Right Alt, Right Shift,
+  Caps Lock, Scroll Lock or F8-F12. Caps Lock, Scroll Lock and the F keys
+  no longer reach other apps while they are the hotkey. On many European
+  keyboard layouts Right Alt is AltGr, so pick another key there.
+- **Speech model:** tiny.en, base.en or small.en (recommended). The English
+  models (`.en`) need no language setting.
+- **Output:** type the text (default), or paste it and restore the
+  clipboard.
+- **Keep the microphone open** between dictations.
+- **Start with Windows:** a per-user entry under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin rights).
+
+A new model is used the next time the app starts. Settings are saved in
+`%APPDATA%\TranscriptionFlow\config.json`; a damaged file is kept as
+`config.json.bad` and the defaults are used.
 
 Command-line options (`venv\Scripts\python dictation.py --help`):
 
 | Option | What it does |
 |---|---|
-| `--model NAME` | `tiny.en`, `base.en` or `small.en` (default) |
+| `--model NAME` | `tiny.en`, `base.en` or `small.en` for this run (default: the one in Settings) |
 | `--device auto` | use an NVIDIA GPU if the GPU probe passes (default `cpu`) |
 | `--keep-mic-warm` | keep the microphone open between dictations |
-| `--download-model` | download and verify `--model`, then exit |
+| `--download-model` | download and verify the model, then exit |
 | `--verify` | re-check the SHA-256 of every installed model file (re-downloads any that fail), then exit |
+| `--reset-config` | put every setting back to its default, then exit |
+| `--tray` | started at sign-in (used by Start with Windows) |
 | `--selftest WAV` | transcribe a WAV file on the CPU and print JSON (no UI) |
 
 Models and logs live in `%LOCALAPPDATA%\TranscriptionFlow`. On start the app
@@ -72,17 +107,10 @@ checks only that the model's files are there at the right sizes; run
 
 Run the app once from a console first (`venv\Scripts\python dictation.py`):
 the first start downloads the `small.en` model, about 480 MB, and without a
-console window you would see no sign of it.
-
-Then create a shortcut in `shell:startup` whose target uses absolute paths,
-for example (if the project is in `C:\Tools\Transcription-flow`):
-
-```
-C:\Tools\Transcription-flow\venv\Scripts\pythonw.exe C:\Tools\Transcription-flow\dictation.py
-```
-
-with "Start in" set to the same project folder. `pythonw.exe` runs without a
-console window; messages then go to the log file only.
+console window you would see no sign of it (a first-run window comes in a
+later version). Then tick **Start with Windows** in Settings. It starts the
+app with `pythonw.exe`, without a console window; messages then go to the
+tray and the log file.
 
 ## For developers
 
@@ -96,15 +124,23 @@ src/transcription_flow/
   models_manifest.json
   gpu_probe.py       CUDA test run in a child process
   single_instance.py one copy at a time
-  hotkey.py          hold-to-talk key handling (Windows `keyboard` library)
-  output.py          typing the text
+  app.py             wires hotkey, controller, tray and settings together
+  config.py          settings file (versioned, checked, atomic save)
+  hotkey.py          hold-to-talk key (pynput hook that only queues events)
+  output.py          typing, or paste-and-restore
+  clipboard.py       the Windows clipboard, for paste mode
+  autostart.py       Start with Windows (HKCU Run value)
   ui/overlay.py      the on-screen pill
+  ui/tray.py         the tray icon (pystray)
+  ui/settings.py     the settings window (Tk)
+  ui/display.py      DPI awareness and the screen's work area
 dictation.py         runs the app from a source checkout
 tests/               pytest suite (no microphone, hotkey or network needed)
 ```
 
 `requirements-lock.txt` pins every dependency with hashes;
-`requirements-dev-lock.txt` adds pytest. Both are generated from
+`requirements-dev-lock.txt` adds pytest and Pillow (for the tray icon
+test on Linux). Both are generated from
 `pyproject.toml` with `uv pip compile --universal --generate-hashes`.
 
 Run the tests (Windows paths shown; on Linux use `venv/bin/`):
@@ -125,4 +161,14 @@ set TFLOW_TEST_MODELS_DIR=%CD%\.ci-models
 venv\Scripts\python -m pytest
 ```
 
+Tests that need Windows (the real clipboard, registry and Tk windows) skip
+elsewhere and run in the windows-latest CI job. The two https-redirect
+tests skip when `openssl` is not on PATH (it makes their test certificate).
+
 The test clip was made with the Kokoro text-to-speech model (Apache-2.0).
+
+## Third-party licences
+
+pynput (hotkey and typing) and pystray (tray icon) are LGPL-3.0; they are
+used as unmodified, separate modules. faster-whisper, ctranslate2 and the
+Whisper models are MIT.

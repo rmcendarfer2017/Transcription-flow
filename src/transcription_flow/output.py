@@ -1,24 +1,95 @@
-"""Text output: types the text into the focused window.
+"""Text output into the focused window.
 
-The clipboard is never touched (review M3): with Windows clipboard history or
-cloud sync on, a copy would store or sync every dictation. A paste mode that
-saves and restores the clipboard comes in M2 as an opt-in setting.
+``type`` (the default) sends the text as key presses and never touches the
+clipboard (review M3): with Windows clipboard history or cloud sync on, a
+copy would store or sync every dictation. ``paste`` is an opt-in for apps
+that drop typed keys (review M8): it saves the clipboard, puts the text on
+it marked "not for history or cloud", presses Ctrl+V, then puts the old
+contents back.
+
+Exceptions raised here must not carry the text (the controller logs only the
+type, but keep it that way at the source too).
 """
 
 import logging
+import time
 
 log = logging.getLogger(__name__)
 
+OUTPUT_MODES = {"type": "Type the text", "paste": "Paste, then restore the clipboard"}
+DEFAULT_OUTPUT = "type"
+PASTE_SETTLE_SECONDS = 0.4  # time for the app to read the clipboard after Ctrl+V
+VK_V = 0x56  # by key code, so Ctrl+V works on any keyboard layout
 
-class KeyboardTyper:
-    """Types with the Windows-only ``keyboard`` library (pynput in M2)."""
+
+class OutputError(Exception):
+    """Typing or pasting failed; the message never holds the text."""
+
+
+class PynputKeys:
+    """Typing and Ctrl+V through pynput's SendInput controller."""
 
     def __init__(self, keyboard_module=None):
         self._kb = keyboard_module
+        self._controller = None
+
+    def _ctl(self):
+        if self._controller is None:
+            if self._kb is None:
+                from pynput import keyboard
+
+                self._kb = keyboard
+            self._controller = self._kb.Controller()
+        return self._controller
+
+    def type(self, text: str) -> None:
+        try:
+            self._ctl().type(text)
+        except Exception as err:  # InvalidCharacterException carries a character
+            raise OutputError(f"typing failed ({type(err).__name__})") from None
+
+    def paste(self) -> None:
+        ctl, kb = self._ctl(), self._kb
+        v = kb.KeyCode.from_vk(VK_V)
+        with ctl.pressed(kb.Key.ctrl):
+            ctl.press(v)
+            ctl.release(v)
+
+
+class TypeOutput:
+    def __init__(self, keys=None):
+        self._keys = keys or PynputKeys()
 
     def emit(self, text: str) -> None:
-        if self._kb is None:
-            import keyboard
+        self._keys.type(text)
 
-            self._kb = keyboard
-        self._kb.write(text)
+
+class PasteOutput:
+    def __init__(self, clipboard=None, keys=None, sleep=time.sleep,
+                 settle=PASTE_SETTLE_SECONDS):
+        if clipboard is None:
+            from .clipboard import WindowsClipboard
+
+            clipboard = WindowsClipboard()
+        self._clipboard = clipboard
+        self._keys = keys or PynputKeys()
+        self._sleep = sleep
+        self._settle = settle
+
+    def emit(self, text: str) -> None:
+        clip = self._clipboard
+        saved = clip.save()
+        ours = clip.set_text(text)
+        try:
+            self._keys.paste()
+            self._sleep(self._settle)
+        finally:
+            # Someone copied something in the meantime: theirs wins.
+            if clip.sequence() == ours:
+                clip.restore(saved)
+            else:
+                log.info("clipboard changed during the paste; not restored")
+
+
+def make_output(mode: str):
+    return PasteOutput() if mode == "paste" else TypeOutput()

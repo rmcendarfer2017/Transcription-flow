@@ -31,6 +31,11 @@ class FakeRecorder:
     def close(self):
         self.calls.append("close")
 
+    def open(self):
+        self.calls.append("open")
+        if self.start_error:
+            raise self.start_error
+
 
 class FakeTranscriber:
     def __init__(self, texts=None, block=False):
@@ -141,7 +146,7 @@ def test_release_without_press_does_nothing(parts):
 def test_other_key_cancels_the_recording(parts):
     ctl, rec, eng, out, ui, errors = parts
     ctl.press()
-    ctl.other_key()
+    ctl.cancel("another key was pressed")
     assert ctl.state is State.IDLE
     ctl.release()
     assert rec.calls == ["start", "cancel"]
@@ -151,7 +156,7 @@ def test_other_key_cancels_the_recording(parts):
 
 def test_other_key_when_idle_does_nothing(parts):
     ctl, rec, eng, out, ui, errors = parts
-    ctl.other_key()
+    ctl.cancel("another key was pressed")
     assert rec.calls == [] and ui == []
 
 
@@ -193,7 +198,7 @@ def test_release_cancels_the_cap_timer(parts, timers):
 def test_cancel_cancels_the_cap_timer(parts, timers):
     ctl, *_ = parts
     ctl.press()
-    ctl.other_key()
+    ctl.cancel("another key was pressed")
     assert timers.timers[-1].cancelled
 
 
@@ -317,3 +322,57 @@ def test_transcript_never_reaches_the_log_even_in_an_error(timers, caplog, tmp_p
     assert "CANARY" not in caplog.text
     assert "CANARY" not in log_file.read_text("utf-8")
     assert not any("CANARY" in e for e in errors)
+
+
+# -- M2: pause, output swap, keep-warm toggle --------------------------------
+
+def test_press_while_paused_is_ignored(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    ctl.set_paused(True)
+    ctl.press()
+    ctl.release()
+    assert rec.calls == [] and ui == [] and ctl.paused
+    ctl.set_paused(False)
+    ctl.press()
+    assert ctl.state is State.RECORDING
+
+
+def test_pausing_cancels_a_recording(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    ctl.press()
+    ctl.set_paused(True)
+    ctl.release()
+    assert rec.calls == ["start", "cancel"] and ui == ["recording", "hidden"]
+    assert eng.calls == 0
+
+
+def test_set_output_is_used_for_the_next_clip(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    other = FakeOutput()
+    ctl.set_output(other)
+    ctl.press()
+    ctl.release()
+    assert idle(ctl)
+    assert other.typed == ["hello"] and out.typed == []
+
+
+def test_keep_warm_on_opens_the_mic_when_idle(parts):
+    ctl, rec, *_ = parts
+    ctl.set_keep_warm(True)
+    assert rec.keep_warm is True and rec.calls == ["open"]
+    ctl.set_keep_warm(False)
+    assert rec.keep_warm is False and rec.calls == ["open", "close"]
+
+
+def test_keep_warm_change_while_recording_waits(parts):
+    ctl, rec, *_ = parts
+    ctl.press()
+    ctl.set_keep_warm(False)
+    assert rec.keep_warm is False and rec.calls == ["start"]  # not closed mid-clip
+
+
+def test_keep_warm_open_failure_is_reported(parts):
+    ctl, rec, eng, out, ui, errors = parts
+    rec.start_error = NoMicrophoneError("no mic")
+    ctl.set_keep_warm(True)
+    assert errors == ["no mic"] and ctl.state is State.IDLE

@@ -13,7 +13,7 @@ from transcription_flow import _env
 
 SRC = Path(transcription_flow.__file__).resolve().parent
 HEAVY = ["faster_whisper", "ctranslate2", "onnxruntime", "huggingface_hub", "sounddevice",
-         "keyboard", "tkinter", "av"]
+         "pynput", "pystray", "PIL", "tkinter", "av"]
 
 
 def run_py(code, extra_path=None, **env):
@@ -29,7 +29,7 @@ def run_py(code, extra_path=None, **env):
 def test_importing_the_package_sets_the_env_and_loads_nothing_heavy():
     mods = sorted(p.relative_to(SRC.parent).with_suffix("").as_posix().replace("/", ".")
                   for p in SRC.rglob("*.py")
-                  if p.name != "__main__.py" and "ui" not in p.parts)
+                  if p.name not in ("__main__.py", "overlay.py"))  # overlay is Tk itself
     result = run_py(f"""
         import importlib, json, os, sys
         for m in {mods!r}:

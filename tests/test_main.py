@@ -239,6 +239,41 @@ def test_second_copy_exits_3(monkeypatch):
         held.release()
 
 
+def test_second_copy_takes_the_guard_before_opening_the_log(monkeypatch, capsys):
+    held = single_instance.acquire(paths.data_dir())
+    try:
+        assert app.main(["--download-model", "--model", "tiny.en"]) == 3
+    finally:
+        held.release()
+    assert not paths.logs_dir().exists()  # review-m1: no second writer of app.log
+    assert "already running" in capsys.readouterr().err
+
+
+def test_download_model_defaults_to_the_model_in_settings(monkeypatch, capsys, tmp_path):
+    from transcription_flow import config
+
+    config.save(config.Config(model="base.en"), paths.config_file())
+    names = []
+    monkeypatch.setattr(models, "download",
+                        lambda name, models_dir, progress, verify: names.append(name) or tmp_path)
+    assert app.main(["--download-model"]) == 0
+    assert app.main(["--download-model", "--model", "tiny.en"]) == 0  # the flag wins
+    assert names == ["base.en", "tiny.en"]
+
+
+def test_reset_config_writes_the_defaults(capsys):
+    from transcription_flow import config
+
+    config.save(config.Config(hotkey="f9", output="paste"), paths.config_file())
+    assert app.main(["--reset-config"]) == 0
+    assert config.load(paths.config_file()) == config.Config()
+    assert "Settings reset" in capsys.readouterr().out
+
+
+def test_tray_flag_is_accepted():
+    assert app._parser().parse_args(["--tray"]).tray is True
+
+
 def test_first_run_download_failure_exits_2(monkeypatch, capsys):
     def fail(*a, **k):
         raise models.DownloadError("The download failed: offline.")

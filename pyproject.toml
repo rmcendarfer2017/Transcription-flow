@@ -13,12 +13,16 @@ dependencies = [
     "faster-whisper==1.2.1",
     "numpy>=2,<3",
     "sounddevice>=0.5,<0.6",
-    # Windows-only global hotkey and typing; swapped for pynput in M2.
-    "keyboard==0.13.5; sys_platform == 'win32'",
+    # Windows shell: global hotkey and typing (pynput), tray icon (pystray).
+    # Both are LGPL-3.0 and ship as separate, replaceable modules.
+    "pynput==1.8.2; sys_platform == 'win32'",
+    "pystray==0.19.5; sys_platform == 'win32'",
+    "Pillow>=11,<14; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# Pillow everywhere so the tray icon drawing is tested on Linux too.
+dev = ["pytest>=8", "Pillow>=11,<14"]
 
 [project.scripts]
 transcription-flow = "transcription_flow.main:main"
