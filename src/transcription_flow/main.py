@@ -167,8 +167,8 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         recorder.check()
         if keep_warm:
             recorder.open()
-    except MicrophoneError as err:
-        startup_errors.append(str(err))  # keep running: the next press tries again
+    except MicrophoneError as err:  # the recorder logged it; keep running
+        startup_errors.append(str(err))
 
     display.enable_dpi_awareness()  # before the first window
     try:
@@ -190,7 +190,12 @@ def _run_dictation(args, settings, model_dir, log_file) -> int:
         else:
             app.report_error(message)
 
-    controller = Controller(recorder, engine, make_output(settings.output), ui=overlay.post,
+    def on_state(state):
+        overlay.post(state)
+        if app is not None:
+            app.on_state(state)
+
+    controller = Controller(recorder, engine, make_output(settings.output), ui=on_state,
                             on_error=report)
     controller.start()
     app = App(settings, paths.config_file(), controller,

@@ -70,8 +70,8 @@ class App:
         return HOTKEYS[self.config.hotkey].label
 
     def report_error(self, message: str) -> None:
-        """Any thread: a problem the user can fix (mic blocked, etc.)."""
-        log.warning(message)
+        """Any thread: a problem the user can fix (mic blocked, etc.). The
+        caller has logged it."""
 
         def show():
             self._error = message
@@ -79,6 +79,16 @@ class App:
             self._tray.notify(message)
 
         self._ui_call(show)
+
+    def on_state(self, state: str) -> None:
+        """Any thread: the controller's overlay state. A recording that
+        starts means the microphone works again, so the error line goes."""
+        if state == "recording" and self._error:
+            self._ui_call(self._clear_error)
+
+    def _clear_error(self) -> None:
+        self._error = None
+        self._refresh()
 
     # -- tray actions (tray thread: hand everything to Tk) ---------------
     def tray_actions(self):

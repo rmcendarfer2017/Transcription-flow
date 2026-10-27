@@ -364,6 +364,18 @@ def test_errors_show_in_the_status_and_a_toast_until_the_next_good_action(shell)
     assert p["tray"].statuses[-1][0] == "Ready (CPU)"
 
 
+def test_a_new_recording_clears_the_error_line(shell):
+    a, p = shell
+    a.report_error("No microphone found.")
+    a.on_state("transcribing")
+    assert p["tray"].statuses[-1][0] == "Error: No microphone found."
+    a.on_state("recording")
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+    calls = len(p["ui"])
+    a.on_state("recording")  # no error: nothing to do
+    assert len(p["ui"]) == calls
+
+
 def test_settings_open_once_and_get_the_current_values(shell):
     a, p = shell
     p["run"].enabled = True
