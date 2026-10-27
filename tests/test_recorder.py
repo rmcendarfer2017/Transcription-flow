@@ -85,15 +85,6 @@ def test_empty_clip_is_not_flagged_as_silent(fake_sd):
     assert len(rec.stop()) == 0
 
 
-def test_cap_bounds_memory_and_sets_flag(fake_sd):
-    rec = Recorder(sd=fake_sd, max_seconds=1.0)
-    rec.start()
-    for _ in range(3):
-        fake_sd.stream.feed(tone(0.75))
-    assert rec.cap_reached
-    assert len(rec.stop()) == 16000
-
-
 def test_stereo_input_is_downmixed(fake_sd):
     rec = Recorder(sd=fake_sd)
     rec.start()

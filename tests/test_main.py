@@ -10,6 +10,7 @@ import pytest
 
 import transcription_flow
 from conftest import FIXTURES
+from helpers import child_env, tone
 from transcription_flow import main as app
 from transcription_flow import models, paths, single_instance
 from transcription_flow.selftest import read_wav
@@ -36,8 +37,7 @@ def test_read_fixture_wav():
 
 
 def test_read_stereo_44k_wav(tmp_path):
-    t = np.arange(44100) / 44100
-    stereo = np.stack([np.sin(2 * np.pi * 220 * t)] * 2, axis=1).ravel() * 0.5
+    stereo = np.repeat(tone(1.0, rate=44100, amp=0.5), 2)
     write_wav(tmp_path / "s.wav", stereo, 44100, channels=2)
     audio = read_wav(tmp_path / "s.wav")
     assert len(audio) == 16000 and abs(np.abs(audio).max() - 0.5) < 0.01
@@ -123,13 +123,11 @@ runpy.run_module("transcription_flow", run_name="__main__")
 def test_real_selftest_with_tiny_en_and_no_network():
     models_dir = os.environ.get("TFLOW_TEST_MODELS_DIR")
     if not models_dir or not models.is_installed("tiny.en", Path(models_dir)):
-        pytest.skip("set TFLOW_TEST_MODELS_DIR to a folder with tiny.en installed "
-                    "(python -m transcription_flow --download-model --model tiny.en --models-dir DIR)")
-    env = dict(os.environ, PYTHONPATH=str(Path(transcription_flow.__file__).parents[1]))
+        pytest.skip("set TFLOW_TEST_MODELS_DIR to a folder with tiny.en installed (see README)")
     out = subprocess.run(
         [sys.executable, "-c", AUDIT, "--selftest", str(HELLO), "--expect", "hello",
          "--model-dir", str(Path(models_dir) / "tiny.en")],
-        capture_output=True, text=True, timeout=300, env=env)
+        capture_output=True, text=True, timeout=300, env=child_env())
     assert "NETWORK" not in out.stderr, out.stderr
     report = json.loads(out.stdout.strip().splitlines()[-1])
     assert out.returncode == 0 and report["ok"], (report, out.stderr[-2000:])

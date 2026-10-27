@@ -53,37 +53,28 @@ def resample(audio: np.ndarray, rate: int, target: int = TARGET_RATE) -> np.ndar
     return np.interp(x_new, np.arange(len(audio)), audio).astype(np.float32)
 
 
-def _sounddevice():
-    import sounddevice
-
-    return sounddevice
-
-
 class Recorder:
-    def __init__(self, sd=None, device=None, keep_warm=False, max_seconds=300.0,
-                 preroll_seconds=0.3):
+    def __init__(self, sd=None, device=None, keep_warm=False, preroll_seconds=0.3):
         self._sd = sd
         self._device = device
         self.keep_warm = keep_warm
-        self._max_seconds = max_seconds
         self._preroll_seconds = preroll_seconds
         self._lock = threading.Lock()
         self._stream = None
         self._rate = TARGET_RATE
         self._armed = False
         self._chunks = []
-        self._samples = 0
-        self._max_samples = 0
         self._preroll = collections.deque()
         self._preroll_samples = 0
-        self.cap_reached = False
         self._levels = collections.deque([0.0] * NUM_LEVELS, maxlen=NUM_LEVELS)
 
     # -- stream ----------------------------------------------------------
     @property
     def sd(self):
         if self._sd is None:
-            self._sd = _sounddevice()
+            import sounddevice
+
+            self._sd = sounddevice
         return self._sd
 
     @property
@@ -123,7 +114,6 @@ class Recorder:
                 continue
             self._rate = rate
             self._stream = stream
-            self._max_samples = int(self._max_seconds * rate)
             self._preroll.clear()
             self._preroll_samples = 0
             log.info("microphone open at %d Hz", rate)
@@ -148,18 +138,16 @@ class Recorder:
 
     # -- capture ---------------------------------------------------------
     def _callback(self, indata, frames, time_info, status):
-        data = np.asarray(indata, dtype=np.float32)
-        chunk = np.array(data.mean(axis=1) if data.ndim == 2 else data, dtype=np.float32)
+        # Runs on the audio thread. The controller's cap timer bounds the length.
+        if indata.shape[1] == 1:
+            chunk = indata[:, 0].copy()
+        else:
+            chunk = indata.mean(axis=1, dtype=np.float32)
+        level = min(float(np.sqrt(np.mean(np.square(chunk)))) * 12.0, 1.0) if len(chunk) else 0.0
         with self._lock:
             if self._armed:
-                if self._samples < self._max_samples:
-                    chunk = chunk[: self._max_samples - self._samples]
-                    self._chunks.append(chunk)
-                    self._samples += len(chunk)
-                else:
-                    self.cap_reached = True
-                rms = float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0
-                self._levels.append(min(rms * 12.0, 1.0))
+                self._chunks.append(chunk)
+                self._levels.append(level)
             elif self.keep_warm:
                 self._preroll.append(chunk)
                 self._preroll_samples += len(chunk)
@@ -172,10 +160,8 @@ class Recorder:
         self.open()
         with self._lock:
             self._chunks = list(self._preroll) if self.keep_warm else []
-            self._samples = sum(len(c) for c in self._chunks)
             self._preroll.clear()
             self._preroll_samples = 0
-            self.cap_reached = False
             self._levels.extend([0.0] * NUM_LEVELS)
             self._armed = True
 
@@ -183,7 +169,6 @@ class Recorder:
         with self._lock:
             self._armed = False
             chunks, self._chunks = self._chunks, []
-            self._samples = 0
             rate = self._rate
         if not self.keep_warm:
             self._close()

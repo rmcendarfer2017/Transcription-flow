@@ -63,20 +63,12 @@ class Overlay:
         """Thread-safe: 'recording', 'transcribing' or 'hidden'."""
         self._events.put(state)
 
-    def call_soon(self, fn) -> None:
-        """Thread-safe: run fn on the Tk thread (e.g. root.quit)."""
-        self._events.put(fn)
-
     def _tick(self) -> None:
         while True:
             try:
-                event = self._events.get_nowait()
+                self._show(self._events.get_nowait())
             except queue.Empty:
                 break
-            if callable(event):
-                event()
-            else:
-                self._show(event)
         self._animate()
         self.root.after(HIDDEN_TICK_MS if self._state == "hidden" else VISIBLE_TICK_MS,
                         self._tick)

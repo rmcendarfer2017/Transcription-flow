@@ -1,4 +1,4 @@
-"""Privacy environment, applied before any heavy library is imported.
+"""Privacy environment, applied by the package __init__ before anything else.
 
 onnxruntime (used by the Silero VAD) sends telemetry unless
 ORT_DISABLE_TELEMETRY is set before it is imported. The HF variables make

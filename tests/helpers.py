@@ -1,8 +1,23 @@
 """Test fakes and helpers (no real audio devices, hotkeys or network)."""
 
+import os
 import time
+from pathlib import Path
 
 import numpy as np
+
+import transcription_flow
+
+SRC_DIR = Path(transcription_flow.__file__).resolve().parent.parent
+
+
+def child_env(drop=(), **extra):
+    """Environment for a child Python that imports the package from src/."""
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env.update(extra)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(SRC_DIR), extra.get("PYTHONPATH")) if p)
+    return env
 
 
 class PortAudioError(Exception):
@@ -36,8 +51,6 @@ class FakeStream:
 
 class FakeSoundDevice:
     """Stand-in for the sounddevice module."""
-
-    PortAudioError = PortAudioError
 
     def __init__(self, device_info=None, accepted_rates=None, default_rate=16000):
         self.device_info = device_info if device_info is not None else {

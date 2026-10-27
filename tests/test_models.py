@@ -275,7 +275,7 @@ def test_unknown_model_name(tmp_path):
 
 def test_shipped_manifest_is_pinned_and_complete():
     manifest = models.load_manifest()
-    assert {"tiny.en", "base.en", "small.en"} <= set(models.model_names(manifest))
+    assert {"tiny.en", "base.en", "small.en"} <= set(manifest["models"])
     assert models.DEFAULT_MODEL == "small.en"
     for name, spec in manifest["models"].items():
         assert spec["repo"] == f"Systran/faster-whisper-{name}"

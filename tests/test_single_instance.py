@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from transcription_flow import single_instance
+from helpers import child_env
 from transcription_flow.single_instance import AlreadyRunning, acquire
 
 
@@ -32,7 +32,6 @@ def test_another_process_is_refused_while_held(tmp_path, name):
     held = acquire(tmp_path, name)
     code = textwrap.dedent(f"""
         import sys
-        sys.path.insert(0, {str(single_instance.__file__.rsplit("transcription_flow", 1)[0])!r})
         from transcription_flow.single_instance import acquire, AlreadyRunning
         try:
             acquire({str(tmp_path)!r}, {name!r})
@@ -40,8 +39,10 @@ def test_another_process_is_refused_while_held(tmp_path, name):
             sys.exit(3)
         sys.exit(0)
     """)
+    run = lambda: subprocess.run([sys.executable, "-c", code], timeout=30,  # noqa: E731
+                                 env=child_env()).returncode
     try:
-        assert subprocess.run([sys.executable, "-c", code], timeout=30).returncode == 3
+        assert run() == 3
     finally:
         held.release()
-    assert subprocess.run([sys.executable, "-c", code], timeout=30).returncode == 0
+    assert run() == 0

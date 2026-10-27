@@ -18,14 +18,11 @@ log = logging.getLogger(__name__)
 MIN_SECONDS = 0.3
 MAX_SECONDS = 300.0
 
-# Overlay states sent to ui().
-RECORDING = "recording"
-TRANSCRIBING = "transcribing"
-HIDDEN = "hidden"
-
 
 class State(enum.Enum):
-    IDLE = "idle"
+    """Each value is the overlay state sent to ui()."""
+
+    IDLE = "hidden"
     RECORDING = "recording"
     TRANSCRIBING = "transcribing"
 
@@ -66,10 +63,7 @@ class Controller:
 
     def shutdown(self, timeout=None) -> None:
         with self._lock:
-            if self._state is State.RECORDING:
-                self._end_recording()
-                self._recorder.cancel()
-                self._set(State.IDLE, HIDDEN)
+            self._cancel()
         self._jobs.put(None)
         if self._worker is not None:
             self._worker.join(timeout)
@@ -89,7 +83,7 @@ class Controller:
                 self._error(err)
                 return
             self._cap_timer = self._timer(self._max_seconds, self._cap_hit)
-            self._set(State.RECORDING, RECORDING)
+            self._set(State.RECORDING)
 
     def release(self) -> None:
         with self._lock:
@@ -99,11 +93,8 @@ class Controller:
     def other_key(self) -> None:
         """Another key went down while the hotkey was held: a shortcut, not dictation."""
         with self._lock:
-            if self._state is State.RECORDING:
-                self._end_recording()
-                self._recorder.cancel()
+            if self._cancel():
                 log.info("recording cancelled: another key was pressed")
-                self._set(State.IDLE, HIDDEN)
 
     def _cap_hit(self) -> None:
         with self._lock:
@@ -112,9 +103,17 @@ class Controller:
                 self._finish("cap")
 
     # -- internals (lock held) -------------------------------------------
-    def _set(self, state: State, overlay: str) -> None:
+    def _set(self, state: State) -> None:
         self._state = state
-        self._ui(overlay)
+        self._ui(state.value)
+
+    def _cancel(self) -> bool:
+        if self._state is not State.RECORDING:
+            return False
+        self._end_recording()
+        self._recorder.cancel()
+        self._set(State.IDLE)
+        return True
 
     def _end_recording(self) -> None:
         if self._cap_timer is not None:
@@ -130,16 +129,16 @@ class Controller:
         try:
             audio = self._recorder.stop()
         except MicrophoneError as err:
-            self._set(State.IDLE, HIDDEN)
+            self._set(State.IDLE)
             self._error(err)
             return
         seconds = len(audio) / TARGET_RATE
         if seconds < self._min_seconds:
             log.info("clip too short (%.2f s), ignored", seconds)
-            self._set(State.IDLE, HIDDEN)
+            self._set(State.IDLE)
             return
         log.info("clip of %.2f s queued (%s)", seconds, reason)
-        self._set(State.TRANSCRIBING, TRANSCRIBING)
+        self._set(State.TRANSCRIBING)
         self._jobs.put(audio)
 
     # -- worker ----------------------------------------------------------
@@ -160,4 +159,4 @@ class Controller:
                 self._on_error(f"Dictation failed: {type(err).__name__}. See the log for details.")
             finally:
                 with self._lock:
-                    self._set(State.IDLE, HIDDEN)
+                    self._set(State.IDLE)

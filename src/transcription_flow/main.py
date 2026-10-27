@@ -1,5 +1,5 @@
-"""Entry point. Nothing heavy is imported at module level: the privacy
-environment (_env) is applied first, then faster-whisper and friends load."""
+"""Entry point. Nothing heavy is imported at module level; the package
+__init__ has already applied the privacy environment (_env)."""
 
 import argparse
 import json
@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import __version__, _env
+from . import __version__
 
 log = logging.getLogger("transcription_flow")
 
@@ -38,12 +38,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _console_progress(name: str):
-    last = [-1]
+    last = -1
 
     def progress(done: int, total: int) -> None:
+        nonlocal last
         pct = int(done * 100 / total) if total else 100
-        if pct != last[0] and sys.stderr is not None:
-            last[0] = pct
+        if pct != last and sys.stderr is not None:
+            last = pct
             end = "\n" if done >= total else ""
             print(f"\rDownloading {name}: {pct:3d}% ({done >> 20} of {total >> 20} MB)",
                   end=end, file=sys.stderr, flush=True)
@@ -51,16 +52,16 @@ def _console_progress(name: str):
     return progress
 
 
-def _download(name: str, models_dir: Path) -> int:
+def _download(name: str, models_dir: Path):
+    """Download with a console progress line; returns the folder or None."""
     from . import models
 
     try:
-        folder = models.download(name, models_dir, progress=_console_progress(name))
+        return models.download(name, models_dir, progress=_console_progress(name))
     except models.ModelError as err:
-        print(f"Model download failed: {err}", file=sys.stderr)
-        return EXIT_SETUP
-    print(folder)
-    return EXIT_OK
+        log.error("model download failed: %s", err)
+        _notify(f"Model download failed: {err}")
+        return None
 
 
 def _selftest(wav: Path, model_dir: Path, expect) -> int:
@@ -84,7 +85,7 @@ def _notify(message: str) -> None:
 
 
 def run_app(args, model_dir: Path, models_dir: Path) -> int:
-    from . import gpu_probe, logsetup, models, paths, single_instance
+    from . import logsetup, models, paths, single_instance
 
     log_file = logsetup.setup(paths.logs_dir())
     try:
@@ -96,18 +97,15 @@ def run_app(args, model_dir: Path, models_dir: Path) -> int:
         if args.model_dir is None and not models.is_installed(args.model, models_dir):
             print(f"First run: downloading the {args.model} model (one time only).",
                   file=sys.stderr)
-            try:
-                models.download(args.model, models_dir, progress=_console_progress(args.model))
-            except models.ModelError as err:
-                log.error("model download failed: %s", err)
-                _notify(f"Model download failed: {err}")
+            if _download(args.model, models_dir) is None:
                 return EXIT_SETUP
-        return _run_dictation(args, model_dir, gpu_probe, paths, log_file)
+        return _run_dictation(args, model_dir, log_file)
     finally:
         guard.release()
 
 
-def _run_dictation(args, model_dir, gpu_probe, paths, log_file) -> int:
+def _run_dictation(args, model_dir, log_file) -> int:
+    from . import gpu_probe, paths
     from .controller import Controller
     from .engine import WhisperEngine
     from .hotkey import DEFAULT_HOTKEY, KeyboardHotkey
@@ -161,7 +159,6 @@ def _run_dictation(args, model_dir, gpu_probe, paths, log_file) -> int:
 
 
 def main(argv=None) -> int:
-    _env.apply()
     args = _parser().parse_args(argv)
     from . import models, paths
 
@@ -174,5 +171,9 @@ def main(argv=None) -> int:
     if args.selftest:
         return _selftest(args.selftest, model_dir, args.expect)
     if args.download_model:
-        return _download(args.model, models_dir)
+        folder = _download(args.model, models_dir)
+        if folder is None:
+            return EXIT_SETUP
+        print(folder)
+        return EXIT_OK
     return run_app(args, model_dir, models_dir)

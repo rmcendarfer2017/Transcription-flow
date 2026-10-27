@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transcription-flow"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Local push-to-talk dictation for Windows, inspired by Wispr Flow. Audio never leaves your PC."
 readme = "README.md"
 license = "Apache-2.0"
@@ -25,6 +25,9 @@ transcription-flow = "transcription_flow.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "transcription_flow.__version__"}
 
 [tool.setuptools.package-data]
 transcription_flow = ["models_manifest.json"]

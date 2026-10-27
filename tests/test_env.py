@@ -2,13 +2,13 @@
 
 import ast
 import json
-import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import transcription_flow
+from helpers import child_env
 from transcription_flow import _env
 
 SRC = Path(transcription_flow.__file__).resolve().parent
@@ -16,19 +16,17 @@ HEAVY = ["faster_whisper", "ctranslate2", "onnxruntime", "huggingface_hub", "sou
          "keyboard", "tkinter", "av"]
 
 
-def run_py(code, extra_path=(), env=None):
-    paths = [*map(str, extra_path), str(SRC.parent)]
-    full_env = {k: v for k, v in os.environ.items()
-                if k not in _env.PRIVACY_ENV and k != "PYTHONPATH"}
-    full_env.update(env or {})
-    full_env["PYTHONPATH"] = os.pathsep.join(paths)
+def run_py(code, extra_path=None, **env):
+    if extra_path:
+        env["PYTHONPATH"] = str(extra_path)
+    full_env = child_env(drop=[*_env.PRIVACY_ENV, "PYTHONPATH"], **env)
     out = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True,
                          text=True, timeout=60, env=full_env)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def test_importing_every_module_has_no_heavy_side_effects():
+def test_importing_the_package_sets_the_env_and_loads_nothing_heavy():
     mods = sorted(p.relative_to(SRC.parent).with_suffix("").as_posix().replace("/", ".")
                   for p in SRC.rglob("*.py")
                   if p.name != "__main__.py" and "ui" not in p.parts)
@@ -39,7 +37,7 @@ def test_importing_every_module_has_no_heavy_side_effects():
         print(json.dumps({{"heavy": [h for h in {HEAVY!r} if h in sys.modules],
                            "env": os.environ.get("ORT_DISABLE_TELEMETRY")}}))
     """)
-    assert result == {"heavy": [], "env": None}  # nothing loads, nothing is set at import
+    assert result == {"heavy": [], "env": "1"}  # the package __init__ applies _env first
 
 
 def test_engine_sets_privacy_env_before_importing_faster_whisper(tmp_path):
@@ -60,12 +58,12 @@ def test_engine_sets_privacy_env_before_importing_faster_whisper(tmp_path):
         engine = WhisperEngine("somewhere").load()
         import faster_whisper
         print(json.dumps({"seen": faster_whisper.SEEN, "kw": engine._model.kw}))
-    """, extra_path=[tmp_path])
+    """, extra_path=tmp_path)
     assert result["seen"] == {k: "1" for k in result["seen"]}
     assert result["kw"] == {"device": "cpu", "compute_type": "int8", "local_files_only": True}
 
 
-def test_main_applies_env_before_anything_else(tmp_path):
+def test_env_overrides_an_inherited_value_before_main_runs():
     result = run_py("""
         import json, os
         from transcription_flow.main import main
@@ -75,7 +73,7 @@ def test_main_applies_env_before_anything_else(tmp_path):
             pass
         print(json.dumps({k: os.environ.get(k) for k in
                           ("ORT_DISABLE_TELEMETRY", "HF_HUB_OFFLINE")}))
-    """, env={"ORT_DISABLE_TELEMETRY": "0"})
+    """, ORT_DISABLE_TELEMETRY="0")
     assert result == {"ORT_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1"}
 
 

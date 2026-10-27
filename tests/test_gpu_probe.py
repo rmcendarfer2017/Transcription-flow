@@ -45,7 +45,8 @@ def test_missing_executable_falls_back(tmp_path):
 
 
 def test_child_gets_the_privacy_env():
-    code = "import os, json; print(json.dumps({'ok': os.environ.get('ORT_DISABLE_TELEMETRY') == '1'}))"
+    code = ("import os, json; "
+            "print(json.dumps({'ok': os.environ.get('ORT_DISABLE_TELEMETRY') == '1'}))")
     assert probe(py(code)).ok
 
 

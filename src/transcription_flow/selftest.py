@@ -17,7 +17,10 @@ _DTYPES = {1: np.uint8, 2: np.int16, 4: np.int32}
 
 
 def read_wav(path: Path) -> np.ndarray:
-    """Read a PCM WAV as 16 kHz mono float32."""
+    """Read a PCM WAV as 16 kHz mono float32.
+
+    Not faster_whisper.audio.decode_audio: in faster-whisper 1.2.1 it passes
+    metadata_errors= to av.open(), which PyAV 19 no longer accepts."""
     with wave.open(str(path), "rb") as wav:
         width, channels, rate = wav.getsampwidth(), wav.getnchannels(), wav.getframerate()
         raw = wav.readframes(wav.getnframes())

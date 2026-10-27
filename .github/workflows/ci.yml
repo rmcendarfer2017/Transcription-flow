@@ -25,25 +25,23 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
         run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
       - name: Cache tiny.en
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ci-models/tiny.en
-          key: whisper-tiny.en-0d3d19a32d3338f10357c0889762bd8d64bbdeba
+          key: whisper-tiny.en-${{ hashFiles('src/transcription_flow/models_manifest.json') }}
       - name: Download tiny.en with our downloader (checksums verified)
         run: python -m transcription_flow --download-model --model tiny.en --models-dir .ci-models
         env:
           PYTHONPATH: src
-      - name: Tests
+      - name: Tests (the slow ones run --selftest on the real model, network blocked)
         run: python -m pytest -ra
         env:
           TFLOW_TEST_MODELS_DIR: ${{ github.workspace }}/.ci-models
-      - name: Selftest CLI
-        run: python -m transcription_flow --selftest tests/fixtures/hello.wav --model-dir .ci-models/tiny.en --expect hello
-        env:
-          PYTHONPATH: src
 
   windows-unit:
     name: Windows unit tests
@@ -56,6 +54,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
         run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
       - name: Unit tests

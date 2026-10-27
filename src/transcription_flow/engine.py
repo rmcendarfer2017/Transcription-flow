@@ -4,8 +4,6 @@ import logging
 import time
 from pathlib import Path
 
-from . import _env
-
 log = logging.getLogger(__name__)
 
 COMPUTE_TYPES = {"cpu": "int8", "cuda": "float16"}
@@ -20,7 +18,6 @@ class WhisperEngine:
 
     def load(self) -> "WhisperEngine":
         if self._model is None:
-            _env.apply()  # before faster_whisper pulls in onnxruntime / huggingface_hub
             from faster_whisper import WhisperModel
 
             started = time.monotonic()

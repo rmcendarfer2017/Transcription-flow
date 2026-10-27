@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import _env, __version__
+from . import __version__
 
 log = logging.getLogger(__name__)
 
@@ -38,8 +38,10 @@ def child_command(model_dir: Path) -> list:
 
 
 def _child_env() -> dict:
+    """The child imports the package, which applies the privacy env itself.
+    From a source checkout (dictation.py) the package is not installed, so
+    put its folder on the child's path."""
     env = dict(os.environ)
-    _env.apply(env)
     if not getattr(sys, "frozen", False):
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (_PACKAGE_PARENT, env.get("PYTHONPATH")) if p)
@@ -67,7 +69,6 @@ def probe(command: list, timeout: float = PROBE_TIMEOUT) -> ProbeResult:
 
 def run_child(model_dir: Path) -> int:
     """Body of ``--probe-gpu``: prints one JSON line, exits 0 unless it crashes."""
-    _env.apply()
     import ctranslate2
 
     if ctranslate2.get_cuda_device_count() < 1:

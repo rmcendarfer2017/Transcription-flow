@@ -53,10 +53,6 @@ def _spec(name: str, manifest: dict) -> dict:
         raise ModelError(f"Unknown model {name!r}.") from None
 
 
-def model_names(manifest=None) -> list:
-    return sorted((manifest or load_manifest())["models"])
-
-
 def model_path(name: str, models_dir: Path) -> Path:
     return Path(models_dir) / name
 
@@ -85,11 +81,8 @@ def is_installed(name: str, models_dir: Path, manifest=None) -> bool:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
     with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(CHUNK), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
 def _fetch(url: str, part: Path, size: int, timeout: float, on_bytes) -> None:
@@ -144,9 +137,9 @@ def download(name: str, models_dir: Path, progress=None, base_url: str = DEFAULT
     """
     manifest = manifest or load_manifest()
     spec = _spec(name, manifest)
-    if is_installed(name, models_dir, manifest):
-        return model_path(name, models_dir)
     folder = model_path(name, models_dir)
+    if is_installed(name, models_dir, manifest):
+        return folder
     folder.mkdir(parents=True, exist_ok=True)
     (folder / MARKER).unlink(missing_ok=True)
 
