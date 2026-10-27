@@ -4,6 +4,7 @@ CI workflow and the static tests (tests/test_packaging.py).
     python packaging/buildinfo.py version            -> 0.1.0.dev0
     python packaging/buildinfo.py numeric-version    -> 0.1.0.0 (Windows version fields)
     python packaging/buildinfo.py tag-version v0.1.0 -> 0.1.0 (exit 1 on a bad tag)
+    python packaging/buildinfo.py check-tag v0.1.0   -> 0.1.0 (exit 1 unless it is the source's release)
     python packaging/buildinfo.py stamp-version v0.1.0  (release builds: __version__ = "0.1.0")
     python packaging/buildinfo.py release-notes 0.1.0   -> that version's CHANGELOG.md section
     python packaging/buildinfo.py check-onedir DIR   -> exit 1 with the problems found
@@ -83,22 +84,29 @@ def tag_version(tag: str) -> str:
     return match.group(1)
 
 
-def _release(version: str) -> str:
+def release_part(version: str) -> str:
     """'0.1.0.dev0' -> '0.1.0'; '0.1.0rc1' -> '0.1.0'."""
     return re.match(r"\d+\.\d+\.\d+", version).group(0)
 
 
-def stamp_version(tag: str, root: Path = ROOT) -> str:
-    """Set __version__ to the tag's version in a release build's checkout, so
-    the exe, the installer and the file names say 0.1.0, not 0.1.0.dev0.
-    The tag must be a release of the version the source is working towards:
-    tagging v0.2.0 on a 0.1.0.dev0 tree stops (bump __init__.py first)."""
+def check_tag(tag: str, root: Path = ROOT) -> str:
+    """The tag's version, if the tag is a release of the version the source
+    is working towards: tagging v0.2.0 on a 0.1.0.dev0 tree stops (bump
+    __init__.py first). Changes nothing."""
     version = tag_version(tag)
-    init = root / "src" / "transcription_flow" / "__init__.py"
     source = app_version(root)
-    if _release(source) != _release(version):
+    if release_part(source) != release_part(version):
         raise SystemExit(f"tag {tag} does not match the source version {source}; "
-                         f"set __version__ in {init.relative_to(root)} first")
+                         "set __version__ in src/transcription_flow/__init__.py first")
+    return version
+
+
+def stamp_version(tag: str, root: Path = ROOT) -> str:
+    """Set __version__ to the tag's version (check_tag) in a release build's
+    checkout, so the exe, the installer and the file names say 0.1.0, not
+    0.1.0.dev0."""
+    version = check_tag(tag, root)
+    init = root / "src" / "transcription_flow" / "__init__.py"
     text = init.read_text("utf-8")
     init.write_text(_VERSION_LINE.sub(f'__version__ = "{version}"', text, count=1), "utf-8")
     return version
@@ -324,7 +332,7 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("version")
     sub.add_parser("numeric-version")
-    for name in ("tag-version", "stamp-version"):
+    for name in ("tag-version", "check-tag", "stamp-version"):
         sub.add_parser(name).add_argument("tag")
     sub.add_parser("release-notes").add_argument("version")
     c = sub.add_parser("check-onedir")
@@ -339,6 +347,8 @@ def main(argv=None) -> int:
         print(numeric_version(app_version()))
     elif args.cmd == "tag-version":
         print(tag_version(args.tag))
+    elif args.cmd == "check-tag":
+        print(check_tag(args.tag))
     elif args.cmd == "stamp-version":
         print(stamp_version(args.tag))
     elif args.cmd == "release-notes":

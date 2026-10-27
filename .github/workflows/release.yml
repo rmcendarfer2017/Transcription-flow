@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
       - name: The tag matches the source version and has a dated CHANGELOG section
         run: |
-          version=$(python3 packaging/buildinfo.py stamp-version "$TAG")
+          version=$(python3 packaging/buildinfo.py check-tag "$TAG")
           python3 packaging/buildinfo.py release-notes "$version" > /dev/null
         env:
           TAG: ${{ github.ref_name }}
@@ -60,17 +60,12 @@ jobs:
         with:
           name: transcription-flow-windows-${{ github.sha }}
           path: release
-      - name: SHA256SUMS.txt for the installer and the portable zip
+      # The exact file names also prove the build used the tag's version.
+      - name: SHA256SUMS.txt, then a draft release with the CHANGELOG notes (never published here)
         run: |
           version=$(python3 packaging/buildinfo.py tag-version "$TAG")
-          cd release
-          sha256sum "TranscriptionFlow-Setup-$version.exe" "TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-        env:
-          TAG: ${{ github.ref_name }}
-      - name: Draft release with the CHANGELOG notes (never published here)
-        run: |
-          version=$(python3 packaging/buildinfo.py tag-version "$TAG")
+          (cd release && sha256sum "TranscriptionFlow-Setup-$version.exe" "TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
           python3 packaging/buildinfo.py release-notes "$version" > notes.md
           gh release create "$TAG" --draft --verify-tag \
             --title "Transcription Flow $version" --notes-file notes.md \

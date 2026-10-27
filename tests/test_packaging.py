@@ -4,6 +4,7 @@ in the windows-build CI job; these catch drift between the packaging and the
 app (mutex name, Run value, data folders) on any OS."""
 
 import ast
+import functools
 import importlib.util
 import os
 import re
@@ -468,7 +469,9 @@ def test_uninstall_removes_autostart_and_asks_about_the_apps_data_folders(monkey
 # -- CI workflows ---------------------------------------------------------------------
 
 
+@functools.cache
 def workflows():
+    """Parsed once per session; the tests only read it."""
     return {p.name: yaml.safe_load(p.read_text("utf-8")) for p in WORKFLOWS}
 
 
@@ -496,8 +499,9 @@ def test_every_workflow_parses_and_runs_on_github_hosted_runners_only():
 
 def test_both_ci_and_release_use_the_one_windows_build():
     flows = workflows()
-    (trigger,) = flows["windows-build.yml"][True]  # yaml reads the key `on` as True
-    inputs = flows["windows-build.yml"][True]["workflow_call"]["inputs"]
+    on = flows["windows-build.yml"][True]  # yaml reads the key `on` as True
+    (trigger,) = on
+    inputs = on["workflow_call"]["inputs"]
     assert trigger == "workflow_call" and list(inputs) == ["release-tag"]
     assert inputs["release-tag"]["type"] == "string" and inputs["release-tag"]["default"] == ""
     assert flows["ci.yml"]["jobs"]["windows-build"]["uses"] == LOCAL_BUILD
@@ -593,7 +597,6 @@ def test_the_iscc_step_checks_the_inno_version_and_the_version_calls():
         assert "throw" in after
 
 
-
 # -- release.yml: tags only, draft only ------------------------------------------------
 
 
@@ -601,9 +604,19 @@ def release_jobs():
     return workflows()["release.yml"]["jobs"]
 
 
+def job_runs(job):
+    return [step["run"] for step in job.get("steps", []) if "run" in step]
+
+
 def all_runs(flow):
-    return [step["run"] for job in flow["jobs"].values()
-            for step in job.get("steps", []) if "run" in step]
+    return [run for job in flow["jobs"].values() for run in job_runs(job)]
+
+
+def release_create_run():
+    """The one run: line in release.yml that calls gh release."""
+    (run,) = [r for r in all_runs(workflows()["release.yml"]) if "gh release" in r]
+    assert run.count("gh release") == 1
+    return run
 
 
 def test_release_runs_only_on_a_v_tag_push():
@@ -628,9 +641,7 @@ def test_release_only_drafts():
                 "actions/upload-artifact", "actions/download-artifact"), (name, action)
         if name != "release.yml":
             assert "gh release" not in runs, name
-    creates = [r for r in all_runs(workflows()["release.yml"]) if "gh release" in r]
-    assert len(creates) == 1 and creates[0].count("gh release") == 1
-    assert "gh release create \"$TAG\" --draft --verify-tag" in creates[0]
+    assert "gh release create \"$TAG\" --draft --verify-tag" in release_create_run()
 
 
 def test_only_the_draft_job_can_write_and_it_runs_no_build_code():
@@ -641,7 +652,7 @@ def test_only_the_draft_job_can_write_and_it_runs_no_build_code():
             else:
                 assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}
     draft = release_jobs()["draft"]
-    runs = "\n".join(s.get("run", "") for s in draft["steps"])
+    runs = "\n".join(job_runs(draft))
     assert "pip" not in runs and "pytest" not in runs and "TranscriptionFlow.exe" not in runs
     assert draft["runs-on"] == "ubuntu-latest"
 
@@ -650,8 +661,8 @@ def test_release_checks_then_builds_on_windows_then_drafts():
     jobs = release_jobs()
     assert jobs["build"]["needs"] == "check" and jobs["draft"]["needs"] == "build"
     assert jobs["build"]["with"] == {"release-tag": "${{ github.ref_name }}"}
-    check = "\n".join(s.get("run", "") for s in jobs["check"]["steps"])
-    assert 'stamp-version "$TAG"' in check and 'release-notes "$version"' in check
+    check = "\n".join(job_runs(jobs["check"]))
+    assert 'check-tag "$TAG"' in check and 'release-notes "$version"' in check
     assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in check
     assert jobs["check"]["steps"][0]["with"]["fetch-depth"] == 0  # origin/main is fetched
     assert windows_build_job()["runs-on"] == "windows-latest"
@@ -662,10 +673,9 @@ def test_the_draft_has_the_installer_the_zip_and_their_sha256sums():
     (download,) = [s for s in steps if "download-artifact" in s.get("uses", "")]
     (upload,) = [s for s in windows_build_job()["steps"] if "upload-artifact" in s.get("uses", "")]
     assert download["with"]["name"] == upload["with"]["name"]
-    runs = "\n".join(s.get("run", "") for s in steps)
+    create = release_create_run()
     assert ('sha256sum "TranscriptionFlow-Setup-$version.exe" '
-            '"TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt') in runs
-    (create,) = [r for r in all_runs(workflows()["release.yml"]) if "gh release" in r]
+            '"TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt') in create
     for asset in ('"release/TranscriptionFlow-Setup-$version.exe"',
                   '"release/TranscriptionFlow-$version-portable.zip"', "release/SHA256SUMS.txt",
                   "--notes-file notes.md"):
@@ -713,7 +723,7 @@ def source_tree(tmp_path, version="0.1.0.dev0"):
     init = tmp_path / "src" / "transcription_flow" / "__init__.py"
     init.parent.mkdir(parents=True)
     real = (ROOT / "src" / "transcription_flow" / "__init__.py").read_text("utf-8")
-    init.write_text(re.sub(r'__version__ = "[^"]+"', f'__version__ = "{version}"', real), "utf-8")
+    init.write_text(buildinfo._VERSION_LINE.sub(f'__version__ = "{version}"', real), "utf-8")
     return init
 
 
@@ -733,6 +743,15 @@ def test_stamp_version_refuses_a_tag_for_another_release(tmp_path):
     for tag in ("v0.2.0", "v0.1.1", "v1.1.0"):
         with pytest.raises(SystemExit, match="does not match the source version 0.1.0.dev0"):
             buildinfo.stamp_version(tag, root=tmp_path)
+    assert init.read_text("utf-8") == before
+
+
+def test_check_tag_changes_nothing(tmp_path):
+    init = source_tree(tmp_path)
+    before = init.read_text("utf-8")
+    assert buildinfo.check_tag("v0.1.0", root=tmp_path) == "0.1.0"
+    with pytest.raises(SystemExit, match="does not match the source version"):
+        buildinfo.check_tag("v0.2.0", root=tmp_path)
     assert init.read_text("utf-8") == before
 
 
@@ -798,7 +817,7 @@ def test_release_notes_stop_a_release_without_a_dated_entry(tmp_path, text, why)
 def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
     """The version being worked on has a section with notes; it is dated only
     in the commit that gets tagged, so date a copy to read its notes."""
-    release = re.match(r"\d+\.\d+\.\d+", buildinfo.app_version()).group(0)
+    release = buildinfo.release_part(buildinfo.app_version())
     text = (ROOT / "CHANGELOG.md").read_text("utf-8")
     heading = re.search(rf"^## \[{re.escape(release)}\] - (Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
                         text, re.M)

@@ -1,13 +1,14 @@
 """Static checks of the user docs (M5): links resolve, and the privacy page
 names what the code really does (model sources, telemetry switches)."""
 
-import json
+import functools
 import re
 from pathlib import Path
 
 import pytest
 
-from transcription_flow import _env
+from transcription_flow import REPO_URL, _env
+from transcription_flow.models import load_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = [ROOT / "README.md", ROOT / "PRIVACY.md", ROOT / "CHANGELOG.md",
@@ -15,6 +16,7 @@ DOCS = [ROOT / "README.md", ROOT / "PRIVACY.md", ROOT / "CHANGELOG.md",
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 
 
+@functools.cache
 def anchors(path):
     """GitHub's heading anchors: lower case, punctuation dropped, spaces to -."""
     out = set()
@@ -51,7 +53,7 @@ def test_the_app_is_inspired_by_wispr_flow_never_a_clone(doc):
 def test_the_readme_links_the_release_and_the_smartscreen_steps():
     readme = (ROOT / "README.md").read_text("utf-8")
     assert "inspired by Wispr Flow" in readme
-    assert "](https://github.com/rmcendarfer2017/Transcription-flow/releases/latest)" in readme
+    assert f"]({REPO_URL}/releases/latest)" in readme
     assert "**More info**, then\n   **Run anyway**" in readme
     for page in ("PRIVACY.md", "docs/smartscreen.md"):
         assert f"]({page}" in readme, page
@@ -59,9 +61,7 @@ def test_the_readme_links_the_release_and_the_smartscreen_steps():
 
 def test_the_privacy_page_names_every_model_source_the_app_downloads_from():
     privacy = (ROOT / "PRIVACY.md").read_text("utf-8")
-    manifest = json.loads((ROOT / "src" / "transcription_flow" / "models_manifest.json")
-                          .read_text("utf-8"))
-    for name, spec in manifest["models"].items():
+    for name, spec in load_manifest()["models"].items():
         assert f"`{spec['repo']}`" in privacy, name
     assert "https://huggingface.co/<repo>/resolve/<revision>/<file>" in privacy
 
