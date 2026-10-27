@@ -1,56 +1,65 @@
 # Transcription Flow
 
-Local push-to-talk dictation for Windows, inspired by Wispr Flow. Hold a
-hotkey, speak, release, and the transcribed text is typed into whatever app
-has focus. It uses a local Whisper model (faster-whisper), so there is no
-per-minute cost and your voice never leaves your PC.
+Hold a key, speak, let go: your words are typed into whatever app you're
+using. Local push-to-talk dictation for Windows, inspired by Wispr Flow. It
+runs a Whisper speech model on your own PC, so your voice never leaves it
+and there is no subscription.
 
-A small black pill with a white sound-wave indicator appears at the bottom
-center of the screen while recording/transcribing.
+<!-- SCREENSHOT (Ryan): docs/images/pill.gif
+     A short GIF of the pill at the bottom of the screen while dictating into Notepad. -->
+_Animation to come: the recording pill while dictating into Notepad._
 
-## Privacy
+**[Download for Windows](https://github.com/rmcendarfer2017/Transcription-flow/releases/latest)**
+(Windows 10 or 11, 64-bit; no Python needed)
 
-- Audio is recorded and transcribed on your PC only.
-- The only network use is a one-time download of the speech model from
-  Hugging Face (a pinned version, checked against SHA-256 checksums). After
-  that, starting the app makes no network calls.
-- onnxruntime telemetry and Hugging Face telemetry are switched off.
-- The clipboard is untouched by default: the text is typed, not pasted.
-  Paste mode (an option for apps that drop typed keys) puts the text on the
-  clipboard marked "not for clipboard history or cloud sync", pastes it, and
-  then puts your previous clipboard back.
-- The log file records timings and lengths, never what you said.
+## Install
 
-## Setup
+1. From the [latest release](https://github.com/rmcendarfer2017/Transcription-flow/releases/latest),
+   download `TranscriptionFlow-Setup-<version>.exe`.
+2. Double-click it. Because the installer is not code-signed yet, Windows
+   shows **"Windows protected your PC"**. Click **More info**, then
+   **Run anyway**. [docs/smartscreen.md](docs/smartscreen.md) shows each
+   step with screenshots, explains why, and shows how to check the file's
+   SHA-256 against the release's `SHA256SUMS.txt` first.
+3. The installer installs for your user only (no administrator password)
+   to `%LOCALAPPDATA%\Programs\Transcription Flow`, adds a Start menu entry
+   and, unless you untick it, starts the app when you sign in.
 
-Needs Python 3.12 or 3.13 (the python.org installer, which includes Tk).
+Can't run installers? The release also has
+`TranscriptionFlow-<version>-portable.zip`: extract it (don't run it from
+inside the zip) and start `TranscriptionFlow.exe`.
 
-```
-python -m venv venv
-venv\Scripts\pip install -r requirements.txt
-venv\Scripts\python dictation.py
-```
+The app runs on the CPU. There is no GPU build yet.
 
-On first start a setup window opens: it checks your microphone (with a
-level meter), downloads a speech model with a progress bar (`small.en`, about
-490 MB, is recommended; `tiny.en` and `base.en` are smaller and faster), lets
-you pick the dictation key and lets you try it. If you close it before a
-model is downloaded, it opens again at the next start. After that the app
-loads the model from disk and makes no network calls.
+## First launch
 
-If the download fails, the window offers **Retry**, **Use a smaller model**
-and **Open model folder** (you can copy the model files there by hand). A
-download that was cut short resumes where it stopped.
+A setup window opens:
 
-Transcription runs on the CPU by default, which is fast enough for `small.en`.
-`--device auto` uses an NVIDIA GPU, but only after a safe test run in a
-separate process shows it works (GPU mode needs the cuBLAS 12 and cuDNN 9
-DLLs, which pip does not install).
+1. **Microphone check** with a level meter. If it stays flat, Windows may be
+   blocking the microphone; the window has a button that opens the Windows
+   microphone privacy settings.
+2. **Speech model download** with a progress bar. `small.en` (about 490 MB)
+   is recommended; `tiny.en` and `base.en` are smaller and faster but less
+   accurate. If the download fails, the window offers **Retry**,
+   **Use a smaller model** and **Open model folder** (you can copy the
+   model files there by hand). A download that was cut short resumes where
+   it stopped.
+3. **Dictation key** (Right Ctrl by default).
+4. **Try it**: hold the key and say something into the box.
 
-## Usage
+<!-- SCREENSHOT (Ryan): docs/images/setup-window.png
+     The setup window during the model download. -->
+_Screenshot to come: the setup window._
 
-Hold **Right Ctrl** (or the key you picked in Settings), speak, release. The
-transcription is typed at the current cursor position.
+If you close the window before a model is downloaded, it opens again at the
+next start. After that the app lives in the notification area (the tray)
+and makes no network calls.
+
+## Using it
+
+Hold **Right Ctrl** (or the key you picked), speak, release. A small pill
+at the bottom of the screen shows that it is recording, then transcribing,
+and the text is typed at the cursor.
 
 - Pressing any other key while the hotkey is held (for example Right Ctrl+C)
   cancels the recording, so shortcuts don't turn into dictation.
@@ -79,7 +88,9 @@ transcription is typed at the current cursor position.
   administrator (Task Manager, admin terminals, some installers), so
   dictation can't type there. Running Transcription Flow as administrator is
   not the fix.
-- Only one copy runs at a time; a second launch exits.
+- Only one copy runs at a time. Starting it again (say, from the Start
+  menu) opens the running copy's Settings, or its setup window while no
+  model is downloaded.
 
 ### The tray icon
 
@@ -131,7 +142,7 @@ clipboard (busy apps or Remote Desktop); it is read when the app starts.
 If you turned the app off in Task Manager's Startup tab, Settings shows
 "Start with Windows" unticked; ticking it and saving turns it back on.
 
-Command-line options (`venv\Scripts\python dictation.py --help`):
+Command-line options, for a source checkout (`venv\Scripts\python dictation.py --help`):
 
 | Option | What it does |
 |---|---|
@@ -148,13 +159,71 @@ Models and logs live in `%LOCALAPPDATA%\TranscriptionFlow`. On start the app
 checks only that the model's files are there at the right sizes; run
 `--verify` if you think a model file is damaged.
 
-## Run on startup (Windows)
+## Privacy
 
-Tick **Start with Windows** in Settings. It starts the app with
-`pythonw.exe`, without a console window; messages then go to the tray and
-the log file.
+- Your voice is recorded and transcribed on your PC only. Audio and
+  transcripts are never saved or uploaded.
+- The only network use is the one-time model download from Hugging Face
+  (a pinned version, checked against SHA-256 checksums).
+- No telemetry, analytics or update checks.
+- The log file records timings and lengths, never what you said.
+- In the default type mode the clipboard is untouched. Paste mode (an
+  option) puts the text on the clipboard, marked "not for clipboard history
+  or cloud sync", pastes it and then puts your previous clipboard back.
+
+[PRIVACY.md](PRIVACY.md) has the details.
+
+## Troubleshooting
+
+- **Nothing is typed.** Check the tray icon's status line. Windows doesn't
+  let normal apps type into windows that run as administrator (Task
+  Manager, admin terminals, some installers); running Transcription Flow as
+  administrator is not the fix. Some apps drop typed keys: try **Paste**
+  as the output in Settings.
+- **"Microphone blocked" or a flat level meter.** Open Windows Settings >
+  Privacy & security > Microphone and allow desktop apps to use it, or pick
+  another microphone in Settings.
+- **Your antivirus warns about it.** The build is new and unsigned, and a
+  hotkey-and-typing app looks like a keylogger to some scanners. See
+  [docs/smartscreen.md](docs/smartscreen.md#if-your-antivirus-complains).
+- **It is slow.** Pick `base.en` or `tiny.en` in Settings; they are much
+  faster on older laptops.
+- **Something else.** **Open log folder** in the tray menu shows `app.log`;
+  please attach it to an
+  [issue](https://github.com/rmcendarfer2017/Transcription-flow/issues)
+  (it never contains what you said).
+
+## Uninstall
+
+Windows Settings > Apps > Installed apps > **Transcription Flow** >
+Uninstall. It removes the app, its Start menu entry and its "Start with
+Windows" entry, then asks whether to also delete your downloaded speech
+models and settings (`%LOCALAPPDATA%\TranscriptionFlow` and
+`%APPDATA%\TranscriptionFlow`; the default is No, which keeps them for a
+later reinstall).
+
+For the portable zip, follow `Uninstall portable.txt` in its folder.
 
 ## For developers
+
+### Run from source
+
+Needs Python 3.12 or 3.13 (the python.org installer, which includes Tk).
+
+```
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
+venv\Scripts\python dictation.py
+```
+
+With **Start with Windows** ticked in Settings, a source checkout starts
+with `pythonw.exe`, without a console window; messages then go to the tray
+and the log file.
+
+`--device auto` uses an NVIDIA GPU, but only after a safe test run in a
+separate process shows it works (GPU mode needs the cuBLAS 12 and cuDNN 9
+DLLs, which pip does not install). The released app is CPU-only.
+
 
 ```
 src/transcription_flow/
@@ -235,6 +304,22 @@ venv\Scripts\python -m PyInstaller --noconfirm --clean packaging\transcription_f
 folder plus `Uninstall portable.txt`); `dist\out\` holds the installer.
 `packaging\ci_smoke.py` has the checks CI runs on both. The installer is
 per-user (no admin prompt) and unsigned for now.
+
+### Making a release
+
+1. Set the date of the version's section in `CHANGELOG.md`
+   (`## [0.1.0] - YYYY-MM-DD`) and merge that to `main`.
+2. Tag the merged commit on `main` and push the tag:
+   `git tag v0.1.0 && git push origin v0.1.0`.
+3. [`release.yml`](.github/workflows/release.yml) checks that the tag
+   matches the version in `src/transcription_flow/__init__.py` (a `v0.1.0`
+   tag builds `0.1.0` from a `0.1.0.dev0` source) and that the changelog
+   section is dated, runs the same Windows build and checks as CI, and
+   creates a **draft** release with the installer, the portable zip,
+   `SHA256SUMS.txt` and the changelog section as notes.
+4. Check the draft (download, checksum, test install), then publish it by
+   hand. The workflow never publishes. After a release, set `__version__`
+   to the next `.dev0` version.
 
 ## Third-party licences
 
