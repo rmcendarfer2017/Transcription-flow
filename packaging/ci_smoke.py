@@ -75,7 +75,8 @@ def check_frozen(check, onedir: Path, wav: Path, models_dir: Path) -> None:
           "--selftest transcribes the fixture with tiny.en", f"exit {code}, {report or err}")
     code, report, err = run_exe(exe, "--check-bundle", env=env)
     check(code == 0 and report is not None and report.get("ok") is True,
-          "--check-bundle loads PortAudio, the pynput and pystray backends, Tk and the UI",
+          "--check-bundle loads PortAudio, the pynput and pystray backends, the tray menu, "
+          "Tk and the UI",
           f"exit {code}, {report or err}")
     model_dir = models_dir / "tiny.en"
     code, report, err = run_exe(exe, "--probe-gpu", "--model-dir", str(model_dir), env=env)

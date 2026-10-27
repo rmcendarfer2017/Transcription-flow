@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from helpers import FakeMenu, FakeMenuItem
 from transcription_flow import app as app_mod
 from transcription_flow import config, models
 from transcription_flow.app import App
@@ -108,19 +109,6 @@ def test_work_area_failure_gives_none():
 
 # -- tray -----------------------------------------------------------------------
 
-class FakeMenuItem:
-    def __init__(self, text, action, checked=None, enabled=True, default=False):
-        self.text, self.action, self.checked, self.enabled, self.default = (
-            text, action, checked, enabled, default)
-
-
-class FakeMenu:
-    SEPARATOR = "----"
-
-    def __init__(self, *items):
-        self.items = items
-
-
 class FakeIcon:
     HAS_NOTIFICATION = True
 
@@ -155,7 +143,7 @@ def tray():
 
 
 def labels(menu):
-    return [i if i == FakeMenu.SEPARATOR else i.text for i in menu.items]
+    return [i.text for i in menu.items]
 
 
 def test_tray_menu_order_and_status_line(tray):
@@ -174,6 +162,36 @@ def test_tray_items_call_their_actions_and_settings_is_the_default(tray):
     for item in items:
         item.action(t._icon, item)
     assert calls == ["pause", "settings", "logs", "quit"]
+    assert [i.text for i in items if i.default] == ["Settings…"]
+
+
+def test_the_stand_in_menu_item_refuses_what_pystray_refuses():
+    """The M4 crash: a default argument made the action take three parameters."""
+    with pytest.raises(ValueError):
+        FakeMenuItem("Quit", lambda icon, item, cb=print: cb())
+    with pytest.raises(ValueError):
+        FakeMenuItem("Pause", lambda icon, item: None, checked=True)
+    FakeMenuItem("Quit", lambda icon, item: None, checked=lambda item: True)
+
+
+def test_tray_menu_builds_with_the_real_pystray():
+    """Where pystray is installed (Windows CI, Ryan's PC) build the menu with
+    the real MenuItem checks, click every item and read every check mark."""
+    pystray = pytest.importorskip("pystray")
+    calls = []
+    actions = TrayActions(*(lambda n=n: calls.append(n) for n in
+                            ("pause", "settings", "logs", "quit")))
+    t = Tray(actions, pystray_module=pystray)
+    t.paused = True
+    items = list(t._menu())
+    assert [i.text for i in items] == ["Transcription Flow: Starting", "- - - -",
+                                       "Pause dictation", "Settings…", "Open log folder",
+                                       "- - - -", "Quit"]
+    for item in items:
+        if item.enabled and item is not pystray.Menu.SEPARATOR:
+            item(None)  # what pystray does on a click
+    assert calls == ["pause", "settings", "logs", "quit"]
+    assert [i.checked for i in items] == [None, None, True, None, None, None, None]
     assert [i.text for i in items if i.default] == ["Settings…"]
 
 

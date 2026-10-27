@@ -2,7 +2,8 @@
 through a platform backend, then print a JSON report. CI runs it on the
 built onedir and on the installed copy (review-m4 F1): ``--selftest`` never
 touches PortAudio, the keyboard hook, the tray or Tk, so a bundle that
-lacks one of them would pass CI and crash at start on the user's PC.
+lacks one of them (or a tray menu pystray refuses) would pass CI and crash
+at start on the user's PC.
 
 No window is shown, nothing is recorded and no hook is installed.
 """
@@ -48,6 +49,23 @@ def _backends(platform: str) -> str:
     return ", ".join(names) or f"no fixed backend on {platform}"
 
 
+def _tray_menu() -> str:
+    """Builds the tray menu with the real pystray, without an icon: pystray
+    checks each callback's parameters when a MenuItem is made, and a bad one
+    crashed the M4 build at start."""
+    import pystray
+
+    from transcription_flow.ui.tray import Tray, TrayActions
+
+    def noop():
+        pass
+
+    items = list(Tray(TrayActions(noop, noop, noop, noop), pystray_module=pystray)._menu())
+    for item in items:  # what the Windows backend reads when it draws the menu
+        item.text, item.checked, item.default, item.enabled  # noqa: B018
+    return f"{len(items)} items"
+
+
 def _tk() -> str:
     import tkinter
 
@@ -69,7 +87,7 @@ def run(platform: str = sys.platform) -> dict:
     checks, ok = {}, True
     for name, check in (("sounddevice", _sounddevice),
                         ("backends", lambda: _backends(platform)),
-                        ("tkinter", _tk), ("app modules", _app_modules)):
+                        ("tray menu", _tray_menu), ("tkinter", _tk), ("app modules", _app_modules)):
         try:
             checks[name] = check()
         except Exception as err:  # report every part, not just the first missing one

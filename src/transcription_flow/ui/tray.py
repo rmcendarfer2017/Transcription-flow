@@ -43,6 +43,18 @@ def make_icon(paused: bool = False, size: int = ICON_SIZE):
     return image
 
 
+# pystray's MenuItem counts an action's positional parameters, defaults
+# included (co_argcount), and raises ValueError above two: a
+# ``lambda icon, item, cb=callback: cb()`` crashed the app at start on
+# Windows. So bind the values in a closure, not with default arguments.
+def _action(callback):
+    return lambda icon, item: callback()
+
+
+def _checked(value):
+    return lambda item: value
+
+
 class Tray:
     def __init__(self, actions: TrayActions, pystray_module=None):
         self._actions = actions
@@ -76,8 +88,8 @@ class Tray:
                 items.append(ps.MenuItem(label, None, enabled=False))
             else:
                 items.append(ps.MenuItem(
-                    label, lambda icon, item, cb=callback: cb(),
-                    checked=None if checked is None else (lambda item, c=checked: c),
+                    label, _action(callback),
+                    checked=None if checked is None else _checked(checked),
                     default=callback is self._actions.open_settings))
         return ps.Menu(*items)
 

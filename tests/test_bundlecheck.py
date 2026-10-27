@@ -8,13 +8,15 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import transcription_flow
-from helpers import child_env
+from helpers import FakeMenu, FakeMenuItem, child_env
 from transcription_flow import bundlecheck
 from transcription_flow import main as app_main
+from transcription_flow.ui import tray
 
 SRC = Path(transcription_flow.__file__).resolve().parent
 
@@ -31,7 +33,20 @@ FAKES = {
     "pynput/__init__.py": "",
     "pynput/keyboard/__init__.py": "class Controller: pass\n",
     "pynput/keyboard/_win32.py": "",
-    "pystray/__init__.py": "class Icon: pass\n",
+    "pystray/__init__.py": """
+        class Icon:
+            pass
+        class MenuItem:
+            def __init__(self, text, action, checked=None, enabled=True, default=False):
+                self.text, self.enabled, self.default = text, enabled, default
+                self.checked = checked(self) if checked else None
+        class Menu:
+            SEPARATOR = MenuItem("- - - -", None)
+            def __init__(self, *items):
+                self.items = items
+            def __iter__(self):
+                return iter(self.items)
+    """,
     "pystray/_win32.py": "",
     "tkinter/__init__.py": """
         TkVersion = 8.6
@@ -91,6 +106,7 @@ def test_a_complete_bundle_passes_and_closes_its_tk_root(tmp_path):
     assert result["ok"] is True
     assert result["checks"]["sounddevice"] == "PortAudio loaded; 2 devices"
     assert result["checks"]["backends"] == "pynput.keyboard._win32, pystray._win32"
+    assert result["checks"]["tray menu"] == "7 items"
     assert result["checks"]["tkinter"] == "Tk 8.6.15"
     assert result["checks"]["app modules"] == f"{len(bundlecheck.APP_MODULES)} modules"
     assert "TK-DESTROYED" in done.stdout
@@ -134,6 +150,24 @@ def test_a_broken_app_module_fails(monkeypatch):
     assert result["ok"] is False
     assert result["checks"]["app modules"].startswith("FAIL ModuleNotFoundError")
     assert "no_such_module" in result["checks"]["app modules"]
+
+
+@pytest.mark.parametrize("action, expected", [
+    (tray._action, "7 items"),
+    # The M4 crash: pystray refuses an action with a third (default) parameter.
+    (lambda callback: lambda icon, item, cb=callback: cb(),
+     "FAIL ValueError: <function"),
+])
+def test_the_tray_menu_check_builds_the_menu_with_pystrays_rules(monkeypatch, action, expected):
+    monkeypatch.setitem(sys.modules, "pystray",
+                        SimpleNamespace(Menu=FakeMenu, MenuItem=FakeMenuItem))
+    monkeypatch.setattr(tray, "_action", action)
+    for name in ("_sounddevice", "_tk", "_app_modules"):
+        monkeypatch.setattr(bundlecheck, name, lambda: "ok")
+    monkeypatch.setattr(bundlecheck, "_backends", lambda platform: "ok")
+    result = bundlecheck.run()
+    assert result["checks"]["tray menu"].startswith(expected)
+    assert result["ok"] is (expected == "7 items")
 
 
 def test_the_hidden_flag_runs_it_and_prints_the_report_last(tmp_path):
