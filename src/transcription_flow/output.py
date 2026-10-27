@@ -90,12 +90,11 @@ class PasteOutput:
             ours = clip.set_text(text)
             self._keys.paste()
             self._sleep(self._settle)
-        except ClipboardError as err:
-            if ours is None:
-                # set_text failed: err.seq says if it changed the clipboard
-                # part way. A busy clipboard was never touched, and another
-                # app may have written to it meanwhile (review-m2 R2).
-                ours = err.seq
+        except ClipboardError as err:  # only set_text raises it
+            # err.seq says if set_text changed the clipboard part way. A busy
+            # clipboard was never touched, and another app may have written
+            # to it meanwhile (review-m2 R2).
+            ours = err.seq
             raise
         finally:
             # Put theirs back only while the clipboard is as we left it.

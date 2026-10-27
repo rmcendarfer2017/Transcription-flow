@@ -157,9 +157,8 @@ class HotkeyTracker:
             if not self.held:  # auto-repeat keeps coming while held
                 self.held = True
                 self._gap = self._repeat_gap()
-                unchecked = False
+                unchecked = self._gap is None and self._still_down() is None
                 if self._gap is None:
-                    unchecked = self._still_down() is None
                     log.info("keys don't auto-repeat here (Filter Keys)%s",
                              "; a missed release can't be detected" if unchecked else "")
                 self._on_press(unchecked)

@@ -131,28 +131,27 @@ class WindowsClipboard:
         first refused item raises, unless ``best_effort``: then every item
         that can go back does, and one error at the end names the rest."""
         self._open()
-        emptied, failed, error = False, [], None
         try:
             if not self._u.EmptyClipboard():
-                raise ClipboardError("the clipboard could not be cleared")
-            emptied = True
-            for fmt, data in items:
-                try:
-                    self._put(fmt, data)
-                except ClipboardError:
-                    if not best_effort:
-                        raise
-                    failed.append(fmt)
-            if failed:
-                raise ClipboardError(f"{len(failed)} of {len(items)} formats could not be "
-                                     f"put back ({', '.join(hex(f) for f in failed)})")
-        except ClipboardError as err:
-            error = err
+                raise ClipboardError("the clipboard could not be cleared")  # seq stays None
+            error, failed = None, []
+            try:
+                for fmt, data in items:
+                    try:
+                        self._put(fmt, data)
+                    except ClipboardError:
+                        if not best_effort:
+                            raise
+                        failed.append(fmt)
+                if failed:
+                    raise ClipboardError(f"{len(failed)} of {len(items)} formats could not be "
+                                         f"put back ({', '.join(hex(f) for f in failed)})")
+            except ClipboardError as err:
+                error = err
         finally:
             self._close()
-        if error is not None:
-            if emptied:
-                error.seq = self.sequence()
+        if error is not None:  # we emptied the clipboard, so it changed
+            error.seq = self.sequence()
             raise error
 
     # -- the interface PasteOutput uses ------------------------------------

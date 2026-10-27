@@ -53,7 +53,6 @@ class Controller:
         self._paused = False
         self._cap_timer = None
         self._recording_id = 0  # the cap timer's token (review F8)
-        self._unchecked = False  # the cap drops this recording (review-m2 R3)
         self._jobs = queue.Queue()
         self._worker = None
 
@@ -94,8 +93,8 @@ class Controller:
                 return
             self._recording_id += 1
             rid = self._recording_id
-            self._unchecked = unchecked
-            self._cap_timer = self._timer(self._max_seconds, lambda: self._cap_hit(rid))
+            self._cap_timer = self._timer(self._max_seconds,
+                                          lambda: self._cap_hit(rid, unchecked))
             self._set(State.RECORDING)
 
     def release(self) -> None:
@@ -143,13 +142,13 @@ class Controller:
             else:
                 self._recorder.close()
 
-    def _cap_hit(self, rid: int) -> None:
+    def _cap_hit(self, rid: int, unchecked: bool) -> None:
         # Timer.cancel() can't stop a callback already waiting for the lock,
         # so a stale cap must not end a newer recording.
         with self._lock:
             if self._state is State.RECORDING and rid == self._recording_id:
                 log.info("recording reached the %.0f s cap", self._max_seconds)
-                if self._unchecked:
+                if unchecked:  # review-m2 R3
                     self._cancel()
                     log.info("recording dropped: its key release could not be checked")
                     self._on_error(CAP_DROPPED)
