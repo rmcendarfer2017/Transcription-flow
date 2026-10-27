@@ -452,6 +452,9 @@ def test_uninstall_removes_autostart_and_asks_about_the_apps_data_folders(monkey
     assert re.findall(r"\bDelTree\s*\((.*?)\);", code) == [
         "ExpandConstant('{localappdata}\\TranscriptionFlow'), True, True, True",
         "ExpandConstant('{userappdata}\\TranscriptionFlow'), True, True, True"]
+    # Also count bare calls: a last statement before `end` has no `;`, and a
+    # call can span lines (review-m4 N1).
+    assert len(re.findall(r"\bDelTree\s*\(", code)) == 2
     assert not re.search(r"\b(DeleteFile|RemoveDir|DelayDeleteFile)\s*\(", code)
     assert [iss_entry(line) for line in iss_sections()["UninstallDelete"]] == [
         {"Type": "filesandordirs", "Name": "{app}\\_internal"}]
