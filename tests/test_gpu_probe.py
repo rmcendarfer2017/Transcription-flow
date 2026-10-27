@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from transcription_flow import gpu_probe
+from transcription_flow import _env, gpu_probe
 from transcription_flow.gpu_probe import ProbeResult, choose_device, probe
 
 
@@ -44,8 +44,10 @@ def test_missing_executable_falls_back(tmp_path):
     assert not probe([str(tmp_path / "missing.exe")]).ok
 
 
-def test_child_gets_the_privacy_env():
-    code = ("import os, json; "
+def test_child_importing_the_package_gets_the_privacy_env(monkeypatch):
+    for name in _env.PRIVACY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    code = ("import os, json, transcription_flow; "
             "print(json.dumps({'ok': os.environ.get('ORT_DISABLE_TELEMETRY') == '1'}))")
     assert probe(py(code)).ok
 

@@ -19,7 +19,7 @@ HEAVY = ["faster_whisper", "ctranslate2", "onnxruntime", "huggingface_hub", "sou
 def run_py(code, extra_path=None, **env):
     if extra_path:
         env["PYTHONPATH"] = str(extra_path)
-    full_env = child_env(drop=[*_env.PRIVACY_ENV, "PYTHONPATH"], **env)
+    full_env = child_env(drop=_env.PRIVACY_ENV, **env)
     out = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True,
                          text=True, timeout=60, env=full_env)
     assert out.returncode == 0, out.stderr
@@ -40,7 +40,7 @@ def test_importing_the_package_sets_the_env_and_loads_nothing_heavy():
     assert result == {"heavy": [], "env": "1"}  # the package __init__ applies _env first
 
 
-def test_engine_sets_privacy_env_before_importing_faster_whisper(tmp_path):
+def test_env_is_set_before_faster_whisper_imports(tmp_path):
     fake = tmp_path / "faster_whisper"
     fake.mkdir()
     (fake / "__init__.py").write_text(textwrap.dedent("""

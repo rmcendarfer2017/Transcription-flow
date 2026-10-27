@@ -143,7 +143,9 @@ class Recorder:
             chunk = indata[:, 0].copy()
         else:
             chunk = indata.mean(axis=1, dtype=np.float32)
-        level = min(float(np.sqrt(np.mean(np.square(chunk)))) * 12.0, 1.0) if len(chunk) else 0.0
+        level = 0.0
+        if self._armed and len(chunk):  # unlocked read: at worst one level is skipped
+            level = min(float(np.sqrt(np.mean(np.square(chunk)))) * 12.0, 1.0)
         with self._lock:
             if self._armed:
                 self._chunks.append(chunk)

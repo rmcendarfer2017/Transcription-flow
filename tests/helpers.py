@@ -12,7 +12,8 @@ SRC_DIR = Path(transcription_flow.__file__).resolve().parent.parent
 
 
 def child_env(drop=(), **extra):
-    """Environment for a child Python that imports the package from src/."""
+    """Environment for a child Python that imports the package from src/.
+    PYTHONPATH is always replaced (src/ plus any PYTHONPATH passed in extra)."""
     env = {k: v for k, v in os.environ.items() if k not in drop}
     env.update(extra)
     env["PYTHONPATH"] = os.pathsep.join(

@@ -59,7 +59,6 @@ def _download(name: str, models_dir: Path):
     try:
         return models.download(name, models_dir, progress=_console_progress(name))
     except models.ModelError as err:
-        log.error("model download failed: %s", err)
         _notify(f"Model download failed: {err}")
         return None
 
@@ -98,6 +97,7 @@ def run_app(args, model_dir: Path, models_dir: Path) -> int:
             print(f"First run: downloading the {args.model} model (one time only).",
                   file=sys.stderr)
             if _download(args.model, models_dir) is None:
+                log.error("model download failed")
                 return EXIT_SETUP
         return _run_dictation(args, model_dir, log_file)
     finally:
