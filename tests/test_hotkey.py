@@ -400,22 +400,17 @@ def test_hook_needs_windows():
 class FakeUser32:
     """SystemParametersInfoW and GetAsyncKeyState over plain values."""
 
-    def __init__(self, delay=1, speed=31, filter_keys=None, fail=(), keys=()):
-        self.values = {hk.SPI_GETKEYBOARDDELAY: delay, hk.SPI_GETKEYBOARDSPEED: speed}
+    def __init__(self, filter_keys=None, fail=False, keys=()):
         self.filter_keys = filter_keys  # dict of FILTERKEYS fields, or None (off)
-        self.fail, self.keys = set(fail), set(keys)
+        self.fail, self.keys = fail, set(keys)
 
     def SystemParametersInfoW(self, action, param, ref, flags):  # noqa: N802
-        if action in self.fail:
-            return 0
+        assert action == hk.SPI_GETFILTERKEYS
         target = ref._obj
-        if action == hk.SPI_GETFILTERKEYS:
-            assert param == ctypes.sizeof(target) == target.cbSize
-            for name, value in (self.filter_keys or {"dwFlags": 0}).items():
-                setattr(target, name, value)
-        else:
-            target.value = self.values[action]
-        return 1
+        assert param == ctypes.sizeof(target) == target.cbSize
+        for name, value in (self.filter_keys or {"dwFlags": 0}).items():
+            setattr(target, name, value)
+        return 0 if self.fail else 1
 
     def GetAsyncKeyState(self, vk):  # noqa: N802
         return -32768 if vk in self.keys else 0  # high bit set: down
@@ -431,13 +426,14 @@ def test_gap_math():
     assert hk.repeat_gap(0.3, 2.0) == 2.5
 
 
-def test_gap_from_the_default_keyboard_settings_is_the_floor():
-    assert gap(delay=1, speed=31) == hk.MIN_REPEAT_GAP
+def test_without_filter_keys_the_gap_is_the_floor():
+    assert gap() == hk.MIN_REPEAT_GAP
 
 
-def test_gap_for_the_slowest_standard_settings_fits_the_floor():
-    # 1 s delay, about 2.5 repeats a second: 1.0 + 0.5 margin
-    assert gap(delay=3, speed=0) == pytest.approx(1.5)
+def test_the_slowest_standard_keyboard_settings_fit_the_floor():
+    """Why the keyboard delay/speed aren't read: 1 s delay, then about 2.5
+    repeats a second, never needs more than the floor."""
+    assert hk.repeat_gap(1.0, 1 / 2.5) == hk.MIN_REPEAT_GAP
 
 
 def test_filter_keys_with_a_long_repeat_delay_widens_the_gap():
@@ -450,19 +446,20 @@ def test_filter_keys_with_repeat_off_gives_no_gap():
     assert gap(filter_keys=fk) is None
 
 
-def test_filter_keys_set_but_off_uses_the_keyboard_settings():
-    fk = {"dwFlags": 0, "iDelayMSec": 0, "iRepeatMSec": 0}  # values kept, feature off
-    assert gap(filter_keys=fk, delay=3, speed=0) == pytest.approx(1.5)
-
-
-def test_bounce_keys_uses_the_keyboard_settings():
-    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iBounceMSec": 500}
+def test_filter_keys_values_kept_but_feature_off_give_the_floor():
+    fk = {"dwFlags": 0, "iDelayMSec": 2000, "iRepeatMSec": 1000}
     assert gap(filter_keys=fk) == hk.MIN_REPEAT_GAP
 
 
-@pytest.mark.parametrize("fail", [hk.SPI_GETKEYBOARDDELAY, hk.SPI_GETKEYBOARDSPEED])
-def test_unreadable_settings_give_the_floor(fail):
-    assert gap(delay=3, speed=0, fail=[fail]) == hk.MIN_REPEAT_GAP
+def test_bounce_keys_keeps_the_standard_repeat():
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iDelayMSec": 2000, "iRepeatMSec": 1000,
+          "iBounceMSec": 500}
+    assert gap(filter_keys=fk) == hk.MIN_REPEAT_GAP
+
+
+def test_unreadable_settings_give_the_floor():
+    fk = {"dwFlags": hk.FKF_FILTERKEYSON, "iDelayMSec": 0, "iRepeatMSec": 0}
+    assert gap(filter_keys=fk, fail=True) == hk.MIN_REPEAT_GAP
 
 
 def test_no_windows_api_gives_the_floor_and_no_key_state(monkeypatch):

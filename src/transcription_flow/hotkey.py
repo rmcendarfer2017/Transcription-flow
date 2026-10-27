@@ -17,8 +17,10 @@ lock screen, our hook stops seeing keys, so the release never arrives. While
 a key is held Windows sends auto-repeat key-downs, so a held hotkey with no
 event for longer than the repeat gap is treated as released and the
 recording is cancelled (with a toast), never typed into whatever has focus
-now. The gap comes from the user's keyboard delay and Filter Keys settings,
-read at each press (``WindowsKeyRepeat``, review-m2 F3). GetAsyncKeyState
+now. The gap is read at each press (``WindowsKeyRepeat``, review-m2 F3):
+Windows' standard keyboard settings always fit the floor (the slowest is a
+1 s delay and 0.4 s between repeats), so only Filter Keys, whose repeat
+delay can be up to 20 s or off, can widen it. GetAsyncKeyState
 can't do this job for a suppressed key (it never reaches the async key
 state); it is the fallback only when keys don't repeat at all and the hotkey
 is a modifier we let through.
@@ -35,7 +37,9 @@ from dataclasses import dataclass
 log = logging.getLogger(__name__)
 
 DOWN, UP, RESET, STOP = "down", "up", "reset", "stop"
-MIN_REPEAT_GAP = 1.5  # seconds: the floor, fits Windows' slowest standard repeat
+# Seconds: the floor. Windows' slowest standard repeat (1 s delay, then
+# about 2.5 a second) plus the margin is exactly this.
+MIN_REPEAT_GAP = 1.5
 REPEAT_MARGIN = 0.5  # seconds on top of the longest wait between two key-downs
 POLL_SECONDS = 0.25
 MISSED_RELEASE = "the key release was missed"
@@ -44,8 +48,8 @@ MISSED_RELEASE = "the key release was missed"
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
 LLKHF_LOWER_IL_INJECTED, LLKHF_INJECTED = 0x02, 0x10
 
-# SystemParametersInfoW actions and the FILTERKEYS flag (winuser.h).
-SPI_GETKEYBOARDSPEED, SPI_GETKEYBOARDDELAY, SPI_GETFILTERKEYS = 0x000A, 0x0016, 0x0032
+# SystemParametersInfoW action and the FILTERKEYS flag (winuser.h).
+SPI_GETFILTERKEYS = 0x0032
 FKF_FILTERKEYSON = 0x01
 
 
@@ -91,7 +95,7 @@ class _FilterKeys(ctypes.Structure):
 
 
 class WindowsKeyRepeat:
-    """The user's auto-repeat settings, read when a press starts.
+    """The user's Filter Keys repeat settings, read when a press starts.
 
     ``gap()`` is the repeat gap in seconds, or None when Filter Keys has
     turned key repeat off. ``is_down(vk)`` is GetAsyncKeyState (None when
@@ -110,18 +114,12 @@ class WindowsKeyRepeat:
         try:
             spi = self._api().SystemParametersInfoW
             fk = _FilterKeys(cbSize=ctypes.sizeof(_FilterKeys))
-            if (spi(SPI_GETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), 0)
+            if not (spi(SPI_GETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), 0)
                     and fk.dwFlags & FKF_FILTERKEYSON and not fk.iBounceMSec):
-                if not (fk.iDelayMSec and fk.iRepeatMSec):
-                    return None  # Filter Keys with repeat off
-                return repeat_gap(fk.iDelayMSec / 1000, fk.iRepeatMSec / 1000)
-            delay, speed = ctypes.c_uint(), ctypes.c_uint()
-            if not (spi(SPI_GETKEYBOARDDELAY, 0, ctypes.byref(delay), 0)
-                    and spi(SPI_GETKEYBOARDSPEED, 0, ctypes.byref(speed), 0)):
-                return MIN_REPEAT_GAP
-            # Delay 0-3 = 250-1000 ms; speed 0-31 = about 2.5-30 repeats a second.
-            return repeat_gap((min(delay.value, 3) + 1) * 0.25,
-                              1 / (2.5 + min(speed.value, 31) * 27.5 / 31))
+                return MIN_REPEAT_GAP  # standard repeat (Bounce Keys keeps it too)
+            if not (fk.iDelayMSec and fk.iRepeatMSec):
+                return None  # Filter Keys with repeat off
+            return repeat_gap(fk.iDelayMSec / 1000, fk.iRepeatMSec / 1000)
         except (AttributeError, OSError):
             return MIN_REPEAT_GAP
 
