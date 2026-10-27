@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Public repo: GitHub-hosted runners only, never self-hosted.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux tests (with a real tiny.en transcription)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
+      - name: Cache tiny.en
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-models/tiny.en
+          key: whisper-tiny.en-0d3d19a32d3338f10357c0889762bd8d64bbdeba
+      - name: Download tiny.en with our downloader (checksums verified)
+        run: python -m transcription_flow --download-model --model tiny.en --models-dir .ci-models
+        env:
+          PYTHONPATH: src
+      - name: Tests
+        run: python -m pytest -ra
+        env:
+          TFLOW_TEST_MODELS_DIR: ${{ github.workspace }}/.ci-models
+      - name: Selftest CLI
+        run: python -m transcription_flow --selftest tests/fixtures/hello.wav --model-dir .ci-models/tiny.en --expect hello
+        env:
+          PYTHONPATH: src
+
+  windows-unit:
+    name: Windows unit tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt
+      - name: Unit tests
+        run: python -m pytest -ra -m "not slow"
