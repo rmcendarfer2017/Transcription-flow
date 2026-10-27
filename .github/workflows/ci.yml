@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Public repo: GitHub-hosted runners only, never self-hosted.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux tests (with a real tiny.en transcription)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install pinned dependencies
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
+      - name: Cache tiny.en
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-models/tiny.en
+          key: whisper-tiny.en-${{ hashFiles('src/transcription_flow/models_manifest.json') }}
+      - name: Download tiny.en with our downloader (checksums re-verified on a cache hit too)
+        run: python -m transcription_flow --verify --model tiny.en --models-dir .ci-models
+        env:
+          PYTHONPATH: src
+      - name: Tests (the slow ones run --selftest on the real model, network blocked)
+        run: python -m pytest -ra
+        env:
+          TFLOW_TEST_MODELS_DIR: ${{ github.workspace }}/.ci-models
+
+  windows-unit:
+    name: Windows unit tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install pinned dependencies
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
+      - name: Unit tests
+        run: python -m pytest -ra -m "not slow"
