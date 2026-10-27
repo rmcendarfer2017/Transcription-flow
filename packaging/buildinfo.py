@@ -220,7 +220,7 @@ def check_onedir(onedir: Path) -> list:
     if not [*internal.glob("ctranslate2/ctranslate2.dll"),
             *internal.glob("ctranslate2.libs/libctranslate2*.so*")]:
         problems.append("the ctranslate2 library is missing")
-    if not [p for p in (onedir / f"{EXE_NAME}.exe", onedir / EXE_NAME) if p.is_file()]:
+    if not any(p.is_file() for p in (onedir / f"{EXE_NAME}.exe", onedir / EXE_NAME)):
         problems.append(f"{EXE_NAME}.exe is missing")
     return problems
 

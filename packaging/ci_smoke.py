@@ -19,14 +19,14 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent / "src")]
 import buildinfo  # noqa: E402
+from transcription_flow.autostart import RUN_KEY, VALUE_NAME  # noqa: E402 (the app's own)
 
 APP_NAME = buildinfo.APP_NAME
 EXE = f"{buildinfo.EXE_NAME}.exe"
 APP_ID = "{C41FBC91-05D3-4BBB-ADAB-FBC5C12CBECD}"  # installer.iss AppId
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-VALUE_NAME = "TranscriptionFlow"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_ID}_is1"
 TIMEOUT = 300
 
@@ -129,13 +129,17 @@ def check_install(check, setup: Path) -> None:
         (folder / "models" / "marker.txt").write_text("ci", "utf-8")
 
 
-def wait_gone(path: Path, seconds: float = 120) -> bool:
+def wait_until(done, seconds: float) -> bool:
     """The uninstaller hands over to a copy of itself in %TEMP% and its
-    first process can exit before the files are gone."""
+    first process can exit before the files and keys are gone."""
     deadline = time.monotonic() + seconds
-    while path.exists() and time.monotonic() < deadline:
+    while not done() and time.monotonic() < deadline:
         time.sleep(1)
-    return not path.exists()
+    return done()
+
+
+def wait_gone(path: Path, seconds: float = 120) -> bool:
+    return wait_until(lambda: not path.exists(), seconds)
 
 
 def check_uninstall(check, delete_user_data: bool) -> None:
@@ -148,20 +152,13 @@ def check_uninstall(check, delete_user_data: bool) -> None:
     check(wait_gone(app), "install folder removed", str(app))
     check(reg_value(RUN_KEY, VALUE_NAME) is None, "Run value removed")
     check(not shortcut().exists(), "Start menu shortcut removed")
-    check(wait_gone_key(UNINSTALL_KEY), "uninstall key removed")
+    check(wait_until(lambda: not reg_key_exists(UNINSTALL_KEY), 30), "uninstall key removed")
     for folder in data_dirs():
         if delete_user_data:
             check(wait_gone(folder, 30), f"/DELETEUSERDATA removed {folder.name} data", str(folder))
         else:
             check(folder.exists(), "a plain silent uninstall keeps settings and models",
                   str(folder))
-
-
-def wait_gone_key(key: str, seconds: float = 30) -> bool:
-    deadline = time.monotonic() + seconds
-    while reg_key_exists(key) and time.monotonic() < deadline:
-        time.sleep(1)
-    return not reg_key_exists(key)
 
 
 def defender(check, path: Path) -> None:
