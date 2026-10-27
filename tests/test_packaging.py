@@ -744,11 +744,12 @@ def test_the_check_ci_command(tmp_path):
     good, bad = tmp_path / "good.json", tmp_path / "bad.json"
     good.write_text(json.dumps(ci_reply(GREEN)), "utf-8")
     bad.write_text("<html>rate limited</html>", "utf-8")
-    for path, code, out in ((good, 0, "CI passed"), (bad, 1, "FAIL: cannot read"),
-                            (tmp_path / "missing.json", 1, "FAIL: cannot read")):
+    for path, code, out in ((good, 0, "CI passed"), (bad, 1, "FAIL: cannot read bad.json"),
+                            (tmp_path / "missing.json", 1, "cannot read missing.json")):
         done = subprocess.run([sys.executable, "-I", script, "check-ci", str(path)],
                               capture_output=True, text=True, timeout=60)
-        assert (done.returncode, done.stdout.startswith(out)) == (code, True), done
+        assert done.returncode == code and out in done.stdout + done.stderr, done
+        assert "Traceback" not in done.stderr
 
 
 # -- the draft step, run for real in bash with a stand-in gh ----------------------
@@ -758,8 +759,8 @@ def run_draft_step(tmp_path, tag, version, moved_to=None):
     """Runs the draft step's script with the build's files in release/ and a
     fake gh that answers `gh api` with the tag's commit and records the rest."""
     work = tmp_path / "work"
-    (work / "packaging").mkdir(parents=True)
-    (work / "packaging" / "buildinfo.py").write_bytes((PACKAGING / "buildinfo.py").read_bytes())
+    work.mkdir()
+    source_tree(work, version)
     (work / "CHANGELOG.md").write_text(f"## [{version}] - 2026-10-30\n\n- Notes.\n", "utf-8")
     (work / "release").mkdir()
     for name in (f"TranscriptionFlow-Setup-{version}.exe",
@@ -904,6 +905,17 @@ def test_stamp_version_refuses_a_tag_for_another_release(tmp_path):
     assert init.read_text("utf-8") == before
 
 
+@pytest.mark.parametrize("version, flag", [("0.1.0", ""), ("10.2.0", ""), ("0.1.0rc1", "--prerelease"),
+                                           ("0.2.0a1", "--prerelease"), ("0.2.0b3", "--prerelease")])
+def test_prerelease_flag(version, flag):
+    assert buildinfo.prerelease_flag(version) == flag
+
+
+def test_prerelease_flag_refuses_a_non_release_version():
+    with pytest.raises(SystemExit, match="not a release tag"):
+        buildinfo.prerelease_flag("0.1.0.dev0")
+
+
 @pytest.mark.parametrize("tag, version", [("v0.0.0", "0.0.0"), ("v10.0.0rc0", "10.0.0rc0")])
 def test_tag_version_takes_zero_and_many_digit_parts(tag, version):
     assert buildinfo.tag_version(tag) == version
@@ -1012,9 +1024,9 @@ def test_release_notes_stop_a_release_without_a_dated_entry(tmp_path, text, why)
         buildinfo.release_notes("0.3.0", changelog)
 
 
-def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
-    """The version being worked on has a section with notes; it is dated only
-    in the commit that gets tagged, so date a copy to read its notes."""
+def source_release_notes(tmp_path):
+    """The notes the source version would get: its section is dated only in
+    the commit that gets tagged, so date a copy to read them."""
     release = buildinfo.target_version(buildinfo.app_version())
     text = (ROOT / "CHANGELOG.md").read_text("utf-8")
     heading = re.search(rf"^## \[{re.escape(release)}\] - (Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
@@ -1022,19 +1034,18 @@ def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
     assert heading, release
     dated = tmp_path / "CHANGELOG.md"
     dated.write_text(text.replace(heading.group(0), f"## [{release}] - 2026-01-01"), "utf-8")
-    notes = buildinfo.release_notes(release, dated)
+    return buildinfo.release_notes(release, dated)
+
+
+def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
+    notes = source_release_notes(tmp_path)
     assert "### Added" in notes and "## [" not in notes
 
 
 def test_the_release_notes_have_only_absolute_links(tmp_path):
     """review-m5 F4: on a release page a relative link resolves under
     /releases/tag/ and 404s."""
-    release = buildinfo.target_version(buildinfo.app_version())
-    text = (ROOT / "CHANGELOG.md").read_text("utf-8")
-    dated = tmp_path / "CHANGELOG.md"
-    dated.write_text(re.sub(rf"^## \[{re.escape(release)}\] - .*$", f"## [{release}] - 2026-01-01",
-                            text, count=1, flags=re.M), "utf-8")
-    notes = buildinfo.release_notes(release, dated)
+    notes = source_release_notes(tmp_path)
     links = re.findall(r"\]\(([^)\s]*)\)", notes) + re.findall(r"<([^>\s]+)>", notes)
     assert links, "the notes link the SmartScreen guide"
     for link in links:

@@ -7,6 +7,7 @@ CI workflow and the static tests (tests/test_packaging.py).
     python packaging/buildinfo.py check-tag v0.1.0   -> 0.1.0 (exit 1 unless it is the source's release)
     python packaging/buildinfo.py stamp-version v0.1.0  (release builds: __version__ = "0.1.0")
     python packaging/buildinfo.py release-notes 0.1.0   -> that version's CHANGELOG.md section
+    python packaging/buildinfo.py prerelease-flag 0.1.0rc1 -> --prerelease ('' for 0.1.0)
     python packaging/buildinfo.py check-ci RUNS.json -> exit 1 unless ci.yml passed (release.yml)
     python packaging/buildinfo.py check-onedir DIR   -> exit 1 with the problems found
     python packaging/buildinfo.py portable-zip DIR OUT.zip
@@ -66,15 +67,19 @@ _LICENCE_NAME = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|ThirdPartyNotices|AUTHO
 _SKIP_SUFFIXES = {".py", ".pyc", ".pyi"}
 
 
+def _read(path: Path) -> str:
+    """A UTF-8 text file, or a one-line error that stops the command."""
+    try:
+        return path.read_text("utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise SystemExit(f"cannot read {path.name}: {e}") from None
+
+
 def app_version(root: Path = ROOT) -> str:
     """__version__ from the package source (not imported: that would apply
     the runtime environment to the build process)."""
     init = root / "src" / "transcription_flow" / "__init__.py"
-    try:
-        text = init.read_text("utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        raise SystemExit(f"cannot read {init}: {e}") from None
-    match = re.search(r'^__version__ = "([^"]+)"', text, re.M)
+    match = _VERSION_LINE.search(_read(init))
     if not match:
         raise SystemExit(f'{init} has no __version__ = "..." line')
     return match.group(1)
@@ -85,9 +90,9 @@ def app_version(root: Path = ROOT) -> str:
 # zeros (PEP 440 would normalise v01.0.0 to 1.0.0, so the file names would
 # not match the version).
 _NUM = r"(?:0|[1-9][0-9]*)"
-_TAG = re.compile(rf"v({_NUM}\.{_NUM}\.{_NUM}(?:(?:a|b|rc){_NUM})?)")
+_TAG = re.compile(rf"v({_NUM}\.{_NUM}\.{_NUM}((?:a|b|rc){_NUM})?)")
 _DEV_SUFFIX = re.compile(r"\.dev[0-9]+$")
-_VERSION_LINE = re.compile(r'^__version__ = "[^"]+"$', re.M)
+_VERSION_LINE = re.compile(r'^__version__ = "([^"]+)"$', re.M)
 _DATE = re.compile(r" - ([0-9]{4}-[0-9]{2}-[0-9]{2})")
 
 
@@ -97,6 +102,13 @@ def tag_version(tag: str) -> str:
     if not match:
         raise SystemExit(f"{tag!r} is not a release tag (v1.2.3 or v1.2.3rc1)")
     return match.group(1)
+
+
+def prerelease_flag(version: str) -> str:
+    """'--prerelease' for 0.1.0rc1, a1 or b1, so GitHub never shows it as the
+    latest release; '' for 0.1.0."""
+    tag_version(f"v{version}")  # a release version, or stop
+    return "--prerelease" if _TAG.fullmatch(f"v{version}").group(2) else ""
 
 
 def target_version(source: str) -> str:
@@ -133,10 +145,7 @@ def release_notes(version: str, changelog: Path = ROOT / "CHANGELOG.md") -> str:
     """The body of the '## [version] - YYYY-MM-DD' section of the changelog.
     A missing, duplicated, undated ('Unreleased') or empty section stops the
     release."""
-    try:
-        text = changelog.read_text("utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        raise SystemExit(f"cannot read {changelog.name}: {e}") from None
+    text = _read(changelog)
     headings = list(re.finditer(rf"^## \[{re.escape(version)}\](.*)$", text, re.M))
     if not headings:
         raise SystemExit(f"CHANGELOG.md has no '## [{version}]' section")
@@ -192,9 +201,9 @@ def ci_problems(check_runs: dict) -> list:
 
 def check_ci(path: Path) -> list:
     try:
-        data = json.loads(path.read_text("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as e:
-        return [f"cannot read {path}: {e}"]
+        data = json.loads(_read(path))
+    except ValueError as e:
+        return [f"cannot read {path.name}: {e}"]
     return ci_problems(data)
 
 
@@ -395,6 +404,15 @@ def portable_zip(onedir: Path, out: Path) -> Path:
     return out
 
 
+def _report(problems: list, ok: str) -> int:
+    for problem in problems:
+        print(f"FAIL: {problem}")
+    if problems:
+        return 1
+    print(ok)
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -403,6 +421,7 @@ def main(argv=None) -> int:
     for name in ("tag-version", "check-tag", "stamp-version"):
         sub.add_parser(name).add_argument("tag")
     sub.add_parser("release-notes").add_argument("version")
+    sub.add_parser("prerelease-flag").add_argument("version")
     sub.add_parser("check-ci").add_argument("check_runs_json", type=Path)
     c = sub.add_parser("check-onedir")
     c.add_argument("onedir", type=Path)
@@ -422,20 +441,12 @@ def main(argv=None) -> int:
         print(stamp_version(args.tag))
     elif args.cmd == "release-notes":
         sys.stdout.write(release_notes(args.version))
+    elif args.cmd == "prerelease-flag":
+        print(prerelease_flag(args.version))
     elif args.cmd == "check-ci":
-        problems = check_ci(args.check_runs_json)
-        for problem in problems:
-            print(f"FAIL: {problem}")
-        if problems:
-            return 1
-        print("CI passed on this commit")
+        return _report(check_ci(args.check_runs_json), "CI passed on this commit")
     elif args.cmd == "check-onedir":
-        problems = check_onedir(args.onedir)
-        for problem in problems:
-            print(f"FAIL: {problem}")
-        if problems:
-            return 1
-        print("onedir OK")
+        return _report(check_onedir(args.onedir), "onedir OK")
     else:
         print(portable_zip(args.onedir, args.out))
     return 0

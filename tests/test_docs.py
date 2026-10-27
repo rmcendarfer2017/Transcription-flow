@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from transcription_flow import REPO_URL, _env, logsetup, output, paths
+from transcription_flow.model_service import ModelService
 from transcription_flow.models import load_manifest, size_label
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -79,8 +80,8 @@ def windows_path(path):
 
 def test_the_privacy_page_numbers_and_paths_are_the_codes(monkeypatch):
     """review-m5 F9: rotation, paste wait and folders come from the code."""
-    privacy = (ROOT / "PRIVACY.md").read_text("utf-8")
-    assert (f"it rotates\nat {logsetup.MAX_BYTES / 1e6:g} MB and keeps {logsetup.BACKUPS} old files"
+    privacy = " ".join((ROOT / "PRIVACY.md").read_text("utf-8").split())  # line wraps don't count
+    assert (f"it rotates at {logsetup.MAX_BYTES / 1e6:g} MB and keeps {logsetup.BACKUPS} old files"
             in privacy)
     assert f"({output.PASTE_SETTLE_SECONDS:g} s by default)" in privacy
     monkeypatch.setattr(paths.sys, "platform", "win32")
@@ -94,14 +95,10 @@ def test_the_privacy_page_numbers_and_paths_are_the_codes(monkeypatch):
         assert shown in privacy, shown
 
 
-def model_sizes():
-    return {name: sum(f["size"] for f in spec["files"])
-            for name, spec in load_manifest()["models"].items()}
-
-
-def test_model_sizes_in_the_docs_are_the_ones_the_app_shows():
-    """QA B8: one number per model, size_label of the manifest (decimal MB)."""
-    sizes = model_sizes()
+def test_model_sizes_in_the_docs_are_the_ones_the_app_shows(tmp_path):
+    """QA B8: one number per model, what the app shows (decimal MB)."""
+    service = ModelService(tmp_path)
+    sizes = {name: service.size(name) for name in service.names()}
     privacy = (ROOT / "PRIVACY.md").read_text("utf-8")
     readme = (ROOT / "README.md").read_text("utf-8")
     for name, size in sizes.items():

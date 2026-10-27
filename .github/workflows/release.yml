@@ -86,12 +86,11 @@ jobs:
             echo "::error::$TAG now points at $tag_sha, not at the built commit $GITHUB_SHA"
             exit 1
           fi
-          prerelease=()
-          case "$version" in *a*|*b*|*rc*) prerelease=(--prerelease) ;; esac
+          prerelease=$(python3 packaging/buildinfo.py prerelease-flag "$version")
           (cd release && sha256sum "TranscriptionFlow-Setup-$version.exe" "TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt)
           cat release/SHA256SUMS.txt
           python3 packaging/buildinfo.py release-notes "$version" > notes.md
-          gh release create "$TAG" --draft --verify-tag "${prerelease[@]}" \
+          gh release create "$TAG" --draft --verify-tag $prerelease \
             --title "Transcription Flow $version" --notes-file notes.md \
             "release/TranscriptionFlow-Setup-$version.exe" \
             "release/TranscriptionFlow-$version-portable.zip" \
