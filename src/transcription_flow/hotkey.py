@@ -24,8 +24,10 @@ delay can be up to 20 s or off, can widen it. GetAsyncKeyState
 can't do this job for a suppressed key (it never reaches the async key
 state); it is the fallback only when keys don't repeat at all and the hotkey
 is a modifier we let through. With no repeat and a suppressed key, a missed
-key-up can't be seen at all: the press is reported as ``unchecked``, and the
-controller then drops such a recording at its time cap instead of typing it
+key-up can't be seen directly: the press is reported as ``unchecked``. Such a
+hold ends when the input desktop changes (the lock screen or a UAC prompt,
+review-m2 N3); a missed key-up in an elevated window still can't be seen, so
+the controller drops such a recording at its time cap instead of typing it
 (review-m2 R3).
 """
 
@@ -54,6 +56,7 @@ LLKHF_LOWER_IL_INJECTED, LLKHF_INJECTED = 0x02, 0x10
 # SystemParametersInfoW action and the FILTERKEYS flag (winuser.h).
 SPI_GETFILTERKEYS = 0x0032
 FKF_FILTERKEYSON = 0x01
+DESKTOP_SWITCHDESKTOP = 0x0100  # the access OpenInputDesktop needs for SwitchDesktop
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,21 @@ class WindowsKeyRepeat:
     def is_down(self, vk: int):
         try:
             return bool(self._api().GetAsyncKeyState(vk) & 0x8000)
+        except (AttributeError, OSError):
+            return None
+
+    def desktop_locked(self):
+        """True while the input desktop isn't ours: the lock screen or a
+        UAC prompt, where our hook sees no keys. None when unknown."""
+        try:
+            api = self._api()
+            handle = api.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
+            if not handle:
+                return True
+            try:  # switching to the desktop that already has input fails only when locked
+                return not api.SwitchDesktop(handle)
+            finally:
+                api.CloseDesktop(handle)
         except (AttributeError, OSError):
             return None
 
@@ -208,8 +226,12 @@ class Hotkey:
 
     def _still_down(self):
         spec = HOTKEYS[self.key_id]
-        # A key our hook suppresses never reaches the async key state.
-        return None if spec.suppress else self._repeat.is_down(spec.vk)
+        if spec.suppress:
+            # A key our hook suppresses never reaches the async key state,
+            # but none of our keys is down on the lock screen or a UAC
+            # prompt, so an unchecked hold ends there (review-m2 N3).
+            return False if self._repeat.desktop_locked() else None
+        return self._repeat.is_down(spec.vk)
 
     def set_paused(self, paused: bool) -> None:
         if paused:
