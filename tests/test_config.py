@@ -113,7 +113,7 @@ def test_broken_json_is_kept_aside_and_defaults_used(cfg_path, text):
     ("utf-16-le without a bom", json.dumps(GOOD).encode("utf-16-le")),
     ("ansi with an accent", b'{"version": 1, "language": "fran\xe7ais"}'),
     ("nested too deeply", b"[" * 100_000),
-])
+], ids=lambda v: v if isinstance(v, str) else "raw")  # short ids: Windows caps PYTEST_CURRENT_TEST at 32767 chars
 def test_a_file_that_is_not_utf8_json_is_kept_aside(cfg_path, caplog, name, raw):
     """review-m2 F1 / QA B2, B6: each of these used to crash the start."""
     cfg_path.parent.mkdir(parents=True)
