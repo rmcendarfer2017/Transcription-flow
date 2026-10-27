@@ -11,14 +11,24 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Tk UI runs on Windows only")
 
 
-@pytest.fixture
-def root():
+@pytest.fixture(scope="module")
+def _tk():
+    # One Tk per module: on windows-latest, creating many Tk() in one process
+    # sometimes fails with "Can't find a usable init.tcl ... No error".
     import tkinter as tk
 
     r = tk.Tk()
     r.withdraw()
     yield r
     r.destroy()
+
+
+@pytest.fixture
+def root(_tk):
+    yield _tk
+    for child in list(_tk.winfo_children()):
+        child.destroy()
+    _tk.update()
 
 
 def test_settings_window_round_trip(root):
