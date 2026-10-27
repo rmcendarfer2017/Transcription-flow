@@ -47,14 +47,13 @@ class Config:
     keep_mic_warm: bool = False
 
 
-def _checks() -> dict:
-    return {
-        "hotkey": lambda v: v in HOTKEYS,
-        "model": lambda v: v in model_names(),
-        "language": lambda v: isinstance(v, str),  # checked against the model below
-        "output": lambda v: v in OUTPUT_MODES,
-        "keep_mic_warm": lambda v: isinstance(v, bool),
-    }
+CHECKS = {
+    "hotkey": lambda v: v in HOTKEYS,
+    "model": lambda v: v in model_names(),
+    "language": lambda v: isinstance(v, str),  # checked against the model below
+    "output": lambda v: v in OUTPUT_MODES,
+    "keep_mic_warm": lambda v: isinstance(v, bool),
+}
 
 
 def from_dict(data) -> Config:
@@ -67,10 +66,9 @@ def from_dict(data) -> Config:
     if version != VERSION:
         log.warning("config: version %r, expected %d; reading the settings it shares",
                     version, VERSION)
-    checks = _checks()
-    for key in sorted(set(data) - set(checks) - {"version"}):
+    for key in sorted(set(data) - set(CHECKS) - {"version"}):
         log.warning("config: unknown setting %r ignored", key)
-    for key, ok in checks.items():
+    for key, ok in CHECKS.items():
         if key not in data:
             continue
         value = data[key]

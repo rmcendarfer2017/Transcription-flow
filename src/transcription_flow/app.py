@@ -12,6 +12,7 @@ import os
 import sys
 
 from . import config as config_mod
+from .hotkey import HOTKEYS
 from .output import make_output
 
 log = logging.getLogger(__name__)
@@ -65,8 +66,6 @@ class App:
         self._tray.notify(f"Ready. Hold {self.hotkey_label()} to dictate.")
 
     def hotkey_label(self) -> str:
-        from .hotkey import HOTKEYS
-
         return HOTKEYS[self.config.hotkey].label
 
     def report_error(self, message: str) -> None:

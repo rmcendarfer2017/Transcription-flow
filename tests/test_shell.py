@@ -1,5 +1,6 @@
 """The Windows shell with fakes: tray, display helpers, settings form, App."""
 
+import dataclasses
 import sys
 
 import pytest
@@ -392,7 +393,7 @@ def test_settings_open_once_and_get_the_current_values(shell):
 def save(a, p, **changes):
     a.open_settings()
     window = p["windows"][-1]
-    form = Form(**{**window.form.__dict__, **changes})
+    form = dataclasses.replace(window.form, **changes)
     window.close()
     window.on_save(form)
 
