@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transcription-flow"
+version = "0.1.0.dev0"
+description = "Local push-to-talk dictation for Windows, inspired by Wispr Flow. Audio never leaves your PC."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "faster-whisper==1.2.1",
+    "numpy>=2,<3",
+    "sounddevice>=0.5,<0.6",
+    # Windows-only global hotkey and typing; swapped for pynput in M2.
+    "keyboard==0.13.5; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+transcription-flow = "transcription_flow.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+transcription_flow = ["models_manifest.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "slow: loads a real Whisper model or runs a real child process (needs TFLOW_TEST_MODELS_DIR for model tests)",
+]

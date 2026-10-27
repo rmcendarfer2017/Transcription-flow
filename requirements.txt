@@ -1,5 +1,1 @@
-faster-whisper
-sounddevice
-numpy
-keyboard
-pyperclip
+-r requirements-lock.txt
