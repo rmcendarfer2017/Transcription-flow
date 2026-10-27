@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .engine import WhisperEngine
+from .hallucination import LITTLE_SPEECH, ShortPhraseDropped
 from .recorder import TARGET_RATE, resample
 
 _PCM, _FLOAT, _EXTENSIBLE = 1, 3, 0xFFFE
@@ -77,12 +78,13 @@ def run(wav: Path, model_dir: Path, expect: str = None) -> dict:
     started = time.monotonic()
     engine = WhisperEngine(model_dir, device="cpu").load()
     loaded = time.monotonic()
-    text = engine.transcribe(audio)
+    try:
+        text = engine.transcribe(audio)
+        reason = None if text else "no speech detected"
+    except ShortPhraseDropped:
+        text, reason = "", LITTLE_SPEECH
     finished = time.monotonic()
-    reason = None
-    if not text:
-        reason = "no speech detected"
-    elif expect is not None and expect.lower() not in text.lower():
+    if reason is None and expect is not None and expect.lower() not in text.lower():
         reason = "the expected text was not found"
     report = {
         "ok": reason is None,

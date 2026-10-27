@@ -66,7 +66,9 @@ transcription is typed at the current cursor position.
 - When a clip has little or no speech, Whisper sometimes "hears" stock
   phrases from video subtitles ("Thanks for watching!", "Thank you."). These
   are dropped when they are the whole transcript; a sentence that contains
-  them is always typed.
+  them is always typed. A quick "Thanks." or "Thank you." that you really
+  say is kept: only one on under a quarter of a second of speech (a cough
+  or a click) is dropped, and a notification then says nothing was typed.
 - Clips shorter than 0.3 s are ignored; a recording stops by itself after
   5 minutes.
 - The microphone is opened only while you hold the hotkey, so Windows doesn't
@@ -99,9 +101,14 @@ key again (Caps Lock toggles, F12 opens developer tools).
 - **Speech model:** tiny.en, base.en or small.en (recommended). The English
   models (`.en`) need no language setting. A model that isn't downloaded yet
   downloads when you save, with the progress in the tray icon's status; the
-  current model keeps working until the new one is ready.
-- **Microphone:** the Windows default, or a specific one, with a level meter.
-  If the chosen microphone is unplugged, the Windows default is used.
+  current model keeps working until the new one is ready. If the app started
+  on another model because the chosen one isn't downloaded (or couldn't be
+  loaded), any Save downloads the chosen one; Settings says so.
+- **Microphone:** the Windows default, or a specific one. Picking one, or
+  pressing **Test**, runs a level meter (opening Settings alone doesn't turn
+  the microphone on). A microphone plugged in while the app runs shows up
+  the next time Settings opens. If the chosen one is unplugged or can't be
+  opened, the Windows default is used.
 - **Output:** type the text (default), or paste it and restore the
   clipboard.
 - **Keep the microphone open** between dictations.
@@ -109,7 +116,8 @@ key again (Caps Lock toggles, F12 opens developer tools).
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin rights).
 
 If the model in your settings isn't downloaded (a download was cut short,
-say), the app starts with one that is and a notification says which; it
+say) or can't be loaded (a damaged file), the app starts with another
+downloaded one and a notification says which; it
 never downloads at start, so it starts offline too. Settings are saved in
 `%APPDATA%\TranscriptionFlow\config.json` (UTF-8); a damaged file, or one
 saved in another encoding, is kept as `config.json.bad` and the defaults are

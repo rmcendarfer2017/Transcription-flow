@@ -7,6 +7,7 @@ only when the user asks, from the setup window or Settings.
 """
 
 import logging
+import threading
 from pathlib import Path
 
 from . import models
@@ -28,6 +29,8 @@ class ModelService:
         self._download = download  # None: models.download, looked up at call time
         self._engine_factory = engine_factory
         self._suspect = set()  # failed to load: re-check its files before the next try
+        self._locks = {}  # model name -> Lock held for its whole download
+        self._locks_lock = threading.Lock()
 
     def size(self, name: str) -> int:
         return sum(f["size"] for f in self._manifest["models"][name]["files"])
@@ -51,10 +54,11 @@ class ModelService:
         i = names.index(name)
         return names[i - 1] if i else None
 
-    def startup_choice(self, wanted: str):
+    def startup_choice(self, wanted: str, skip=()):
         """``wanted`` if installed; else the default, else the largest
-        installed model; None when nothing is installed."""
-        installed = self.installed()
+        installed model; None when nothing is installed. Models in
+        ``skip`` (failed to load) don't count as installed."""
+        installed = [n for n in self.installed() if n not in skip]
         if wanted in installed:
             return wanted
         if models.DEFAULT_MODEL in installed:
@@ -64,16 +68,27 @@ class ModelService:
     def download(self, name: str, progress, cancel) -> None:
         """Worker thread. ``progress(done, total)``; ``cancel`` is a
         threading.Event. Raises Cancelled or a ModelError. A cancelled
-        download keeps its .part files, so the next try resumes."""
+        download keeps its .part files, so the next try resumes.
 
-        def report(done, total):
+        One download per model at a time (review-m3 F2): a cancelled one
+        can still be inside a read, and a restart waits for it to stop
+        rather than append to the same .part file alongside it."""
+
+        def check():
             if cancel.is_set():
                 raise Cancelled()
+
+        def report(done, total):
+            check()
             progress(done, total)
 
-        download = self._download or models.download
-        download(name, self.folder, progress=report, verify=name in self._suspect,
-                 manifest=self._manifest)
+        with self._locks_lock:
+            lock = self._locks.setdefault(name, threading.Lock())
+        with lock:
+            check()
+            download = self._download or models.download
+            download(name, self.folder, progress=report, verify=name in self._suspect,
+                     manifest=self._manifest, before_write=check)
 
     def load(self, name: str, language: str, model_dir=None):
         """Worker thread: a loaded engine. ``model_dir`` overrides the

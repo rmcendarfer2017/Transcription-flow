@@ -34,6 +34,7 @@ def install(name):
 
 class Seen:
     engines, windows, wizards, trays, overlays = [], [], [], [], []
+    broken = {"broken"}  # model folders whose load fails
 
 
 class FakeEngine:
@@ -42,7 +43,9 @@ class FakeEngine:
 
     def load(self):
         Seen.engines.append(self)
-        if self.model_dir.name == "broken":
+        if len(Seen.engines) > 10:  # a retry loop: pytest.fail gets past main's except Exception
+            pytest.fail("the start kept loading models")
+        if self.model_dir.name in Seen.broken:
             raise RuntimeError("bad model.bin")
         return self
 
@@ -122,6 +125,7 @@ class FakeHotkey:
 def started(monkeypatch):
     for name in ("engines", "windows", "wizards", "trays", "overlays"):
         setattr(Seen, name, [])
+    Seen.broken = {"broken"}
     monkeypatch.setattr(models, "load_manifest", fake_manifest)
     monkeypatch.setattr(models, "download", lambda *a, **k: pytest.fail("downloaded at start"))
     monkeypatch.setattr(socket.socket, "connect", lambda *a: pytest.fail("network at start"))
@@ -183,3 +187,37 @@ def test_a_model_that_fails_to_load_keeps_the_app_running_for_the_setup_window(s
     assert started("--model-dir", str(paths.data_dir() / "broken")) == app_main.EXIT_OK
     assert len(Seen.wizards) == 1  # a way to fetch one again, not an exit
     assert "could not be loaded" in (paths.logs_dir() / "app.log").read_text("utf-8")
+
+
+def test_a_chosen_model_that_fails_to_load_gives_way_to_another_installed_one(started):
+    """QA B2: a corrupt small.en with a good tiny.en starts on tiny.en, says
+    so in a toast and doesn't open the setup window."""
+    install("tiny.en")
+    install("small.en")
+    Seen.broken = {"small.en"}
+    assert started(model="small.en") == app_main.EXIT_OK
+    assert [e.model_dir.name for e in Seen.engines] == ["small.en", "tiny.en"]
+    assert Seen.wizards == []
+    assert Seen.trays[0].notes == ["small.en could not be loaded; using tiny.en. Open Settings "
+                                   "and press Save to download it again."]
+    assert Seen.trays[0].statuses[-1] == "Ready (CPU)"
+
+
+def test_a_fallback_that_fails_too_tries_the_next_and_the_toast_says_not_downloaded(started):
+    install("tiny.en")
+    install("small.en")
+    Seen.broken = {"small.en"}  # the default fallback for a missing base.en
+    started(model="base.en")
+    assert [e.model_dir.name for e in Seen.engines] == ["small.en", "tiny.en"]
+    assert Seen.trays[0].notes == ["base.en isn't downloaded yet; using tiny.en. Open "
+                                   "Settings and press Save to download it."]
+
+
+def test_when_every_installed_model_fails_to_load_the_setup_window_opens_once(started):
+    install("tiny.en")
+    install("small.en")
+    Seen.broken = {"small.en", "tiny.en"}
+    assert started(model="small.en") == app_main.EXIT_OK
+    assert [e.model_dir.name for e in Seen.engines] == ["small.en", "tiny.en"]
+    assert len(Seen.wizards) == 1
+    assert Seen.trays[0].statuses[-1] == "No speech model yet"

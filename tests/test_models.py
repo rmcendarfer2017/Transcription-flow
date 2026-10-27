@@ -316,6 +316,27 @@ def test_dropped_connection_keeps_the_part_and_a_retry_resumes(tmp_path, server)
     assert models.is_installed("fake", tmp_path / "models", make_manifest())
 
 
+def test_before_write_runs_before_each_block_and_can_stop_the_download(tmp_path, server,
+                                                                     monkeypatch):
+    """review-m3 F2: a cancel found after a read writes nothing more."""
+    monkeypatch.setattr(models, "CHUNK", 1000)
+    part = tmp_path / "models" / "fake" / "model.bin.part"
+    calls = []
+
+    class Stop(Exception):
+        pass
+
+    def before_write():
+        if part.exists():  # model.bin's blocks (config.json comes first)
+            calls.append(1)
+            if len(calls) == 3:
+                raise Stop()
+
+    with pytest.raises(Stop):
+        fetch(tmp_path, server, before_write=before_write)
+    assert part.stat().st_size == 2000  # two blocks; the third never landed
+
+
 def test_not_enough_disk_space(tmp_path, server, monkeypatch):
     monkeypatch.setattr(models.shutil, "disk_usage",
                         lambda p: type("U", (), {"free": 10})())

@@ -12,6 +12,7 @@ import queue
 import threading
 import traceback
 
+from .hallucination import ShortPhraseDropped
 from .output import OutputWarning
 from .recorder import TARGET_RATE, MicrophoneError
 
@@ -57,6 +58,7 @@ class Controller:
         self._paused = False
         self._cap_timer = None
         self._recording_id = 0  # the cap timer's token (review F8)
+        self._mic_changed = False  # a warm stream reopens on the new mic when idle
         self._jobs = queue.Queue()
         self._worker = None
 
@@ -153,15 +155,13 @@ class Controller:
 
     def set_microphone(self, device) -> None:
         """Use another microphone (a name, or None for the default) from the
-        next recording; a warm stream reopens on it now."""
+        next recording. A warm stream reopens on it now, or when the
+        recording or transcription in progress ends (review-m3 F6)."""
         with self._lock:
             self._recorder.device = device
-            if self._state is State.IDLE and self._recorder.is_open:
-                self._recorder.close()
-                try:
-                    self._recorder.open()
-                except MicrophoneError as err:
-                    self._error(err)
+            self._mic_changed = True
+            if self._state is State.IDLE:
+                self._reopen_mic()
 
     def _cap_hit(self, rid: int, unchecked: bool) -> None:
         # Timer.cancel() can't stop a callback already waiting for the lock,
@@ -180,6 +180,18 @@ class Controller:
     def _set(self, state: State) -> None:
         self._state = state
         self._ui(state.value)
+        if state is State.IDLE and self._mic_changed:
+            self._reopen_mic()
+
+    def _reopen_mic(self) -> None:
+        """A warm stream moves to the newly chosen microphone."""
+        self._mic_changed = False
+        if self._recorder.is_open:
+            self._recorder.close()
+            try:
+                self._recorder.open()
+            except MicrophoneError as err:
+                self._error(err)
 
     def _cancel(self) -> bool:
         if self._state is not State.RECORDING:
@@ -235,6 +247,8 @@ class Controller:
             except OutputWarning as warning:  # the text went out: not an error
                 log.warning("%s", warning)
                 self._on_notice(str(warning))
+            except ShortPhraseDropped as dropped:  # nothing typed, on purpose (QA B4)
+                self._on_notice(str(dropped))
             except Exception as err:
                 # Type and frames only: an exception's message (or a chained
                 # one's) may hold the transcript (review F7).

@@ -483,8 +483,9 @@ def gap(**kw):
 
 
 class DesktopUser32:
-    def __init__(self, open_handle=7, switch=1, fail=False):
+    def __init__(self, open_handle=7, switch=1, fail=False, error=hk.ERROR_ACCESS_DENIED):
         self.open_handle, self.switch, self.fail = open_handle, switch, fail
+        self.error = error  # GetLastError after a failed OpenInputDesktop
         self.calls = []
 
     def OpenInputDesktop(self, flags, inherit, access):  # noqa: N802
@@ -504,12 +505,25 @@ class DesktopUser32:
 
 @pytest.mark.parametrize("api, locked", [
     (DesktopUser32(), False),  # our desktop has the input
-    (DesktopUser32(open_handle=0), True),  # the lock screen: can't open it
+    (DesktopUser32(open_handle=0), True),  # the lock screen: access denied
+    (DesktopUser32(open_handle=0, error=1450), None),  # another failure: unknown (F7)
     (DesktopUser32(switch=0), True),  # opened, but switching fails: locked
     (DesktopUser32(fail=True), None),  # unknown
 ])
 def test_desktop_locked(api, locked):
-    assert WindowsKeyRepeat(api).desktop_locked() is locked
+    assert WindowsKeyRepeat(api, last_error=lambda: api.error).desktop_locked() is locked
+
+
+def test_a_lasting_desktop_error_is_logged_once_without_cancelling(caplog):
+    api = DesktopUser32(open_handle=0, error=1450)
+    repeat = WindowsKeyRepeat(api, last_error=lambda: api.error)
+    assert repeat.desktop_locked() is None and repeat.desktop_locked() is None
+    assert caplog.text.count("lock screen can't be detected here (error 1450)") == 1
+
+
+def test_no_windows_api_means_the_desktop_is_unknown(monkeypatch):
+    monkeypatch.delattr(ctypes, "WinDLL", raising=False)
+    assert WindowsKeyRepeat().desktop_locked() is None
 
 
 def test_desktop_locked_asks_for_switch_access_and_closes_the_handle():

@@ -437,6 +437,54 @@ def test_a_new_mic_while_recording_or_cold_waits_for_the_next_open(parts):
     assert rec.device is None and rec.calls == ["start"]  # not swapped mid-clip
 
 
+def test_a_new_mic_during_a_warm_recording_reopens_when_it_ends(parts):
+    """review-m3 F6: the change isn't lost until a restart."""
+    ctl, rec, *_ = parts
+    rec.is_open = True  # keep-warm stream
+    ctl.press()
+    ctl.set_microphone("Headset mic")
+    assert rec.calls == ["start"]  # not swapped mid-clip
+    ctl.release()
+    assert idle(ctl)
+    assert rec.calls == ["start", "stop", "close", "open"]
+    ctl.press()
+    ctl.release()
+    assert idle(ctl)
+    assert rec.calls[4:] == ["start", "stop"]  # once only
+
+
+def test_a_new_mic_during_a_transcription_reopens_when_it_ends(parts):
+    ctl, rec, eng, *_ = parts
+    rec.is_open = True
+    eng.gate.clear()
+    ctl.press()
+    ctl.release()
+    assert ctl.state is State.TRANSCRIBING
+    ctl.set_microphone("Headset mic")
+    assert rec.calls == ["start", "stop"]
+    eng.gate.set()
+    assert idle(ctl)
+    assert wait_for(lambda: rec.calls == ["start", "stop", "close", "open"])
+
+
+def test_a_new_mic_during_a_cancelled_warm_recording_reopens(parts):
+    ctl, rec, *_ = parts
+    rec.is_open = True
+    ctl.press()
+    ctl.set_microphone("Headset mic")
+    ctl.cancel("another key was pressed")
+    assert rec.calls == ["start", "cancel", "close", "open"]
+
+
+def test_a_new_mic_during_a_cold_recording_needs_no_reopen(parts):
+    ctl, rec, *_ = parts
+    ctl.press()
+    ctl.set_microphone("Headset mic")
+    ctl.release()
+    assert idle(ctl)
+    assert rec.calls == ["start", "stop"]  # the next press opens the new mic
+
+
 def test_a_new_mic_that_fails_to_open_is_reported(parts):
     ctl, rec, eng, out, ui, errors = parts
     rec.is_open = True
@@ -472,3 +520,73 @@ def test_an_output_warning_goes_to_the_notice_channel_when_there_is_one(timers):
         assert notices == ["pasted, clipboard partly lost"] and errors == []
     finally:
         ctl.shutdown(timeout=5)
+
+
+def test_a_dropped_short_phrase_is_a_notice_not_an_error(timers):
+    """QA B4: nothing typed, and the user hears why; the overlay hides."""
+    from transcription_flow.hallucination import SHORT_PHRASE_HINT, ShortPhraseDropped
+
+    notices, errors, ui = [], [], []
+    eng, out = FakeTranscriber(), FakeOutput()
+    eng.error = ShortPhraseDropped()
+    ctl = Controller(FakeRecorder(), eng, out, ui=ui.append, on_error=errors.append,
+                     on_notice=notices.append, timer=timers)
+    ctl.start()
+    try:
+        ctl.press()
+        ctl.release()
+        assert idle(ctl)
+        assert notices == [SHORT_PHRASE_HINT] and errors == [] and out.typed == []
+        assert ui[-1] == "hidden"
+    finally:
+        ctl.shutdown(timeout=5)
+
+
+# -- N2 end to end: Controller + PasteOutput (adopted from QA M3) -------------------
+
+SECRET = "tomato-soup-secret-phrase"
+
+
+def paste_run(timers, caplog, fail_paste=False, fail_restore=False, fail_set=None):
+    from test_output import FakeClipboard, FakeKeys
+
+    from transcription_flow.output import PasteOutput
+
+    caplog.set_level("DEBUG")
+    log, errors, notices = [], [], []
+    clip = FakeClipboard(log)
+    clip.fail_restore, clip.fail_set = fail_restore, fail_set
+    out = PasteOutput(clipboard=clip, keys=FakeKeys(log, fail=fail_paste), sleep=lambda s: None,
+                      settle=0)
+    ctl = Controller(FakeRecorder(), FakeTranscriber([SECRET]), out, on_error=errors.append,
+                     on_notice=notices.append, timer=timers)
+    ctl.start()
+    try:
+        ctl.press()
+        ctl.release()
+        assert idle(ctl)
+    finally:
+        ctl.shutdown(timeout=5)
+    flush_logs()
+    assert SECRET not in caplog.text and SECRET not in " ".join(errors + notices)
+    return errors, notices
+
+
+def test_paste_ok_but_restore_failed_is_a_notice(timers, caplog):
+    errors, notices = paste_run(timers, caplog, fail_restore=True)
+    assert errors == [] and len(notices) == 1 and "pasted" in notices[0]
+
+
+def test_paste_failed_and_restore_failed_reports_the_paste_error(timers, caplog):
+    errors, notices = paste_run(timers, caplog, fail_paste=True, fail_restore=True)
+    assert notices == [] and errors == [
+        "Dictation failed: RuntimeError. See the log for details."]
+
+
+def test_set_text_failed_part_way_and_restore_failed_reports_the_clipboard(timers, caplog):
+    errors, notices = paste_run(timers, caplog, fail_set="part way", fail_restore=True)
+    assert notices == [] and len(errors) == 1 and "ClipboardError" in errors[0]
+
+
+def test_paste_with_nothing_failing_reports_nothing(timers, caplog):
+    assert paste_run(timers, caplog) == ([], [])

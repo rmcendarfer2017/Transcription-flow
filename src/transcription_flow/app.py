@@ -72,9 +72,10 @@ class App:
                  ui_call, stop_ui, settings_factory=None, output_factory=make_output,
                  launch_command=None, log_dir=None, opener=open_folder, device="cpu",
                  models=None, model=None, language=None, wizard_factory=None, spawn=_spawn,
-                 mic_list=None, meter_factory=None):
+                 mic_list=None, meter_factory=None, unloadable=()):
         """``model``/``language``: what the controller's engine runs now
-        (None: no model is installed yet). ``models`` is a ModelService."""
+        (None: no model is installed yet). ``models`` is a ModelService.
+        ``unloadable``: installed models that failed to load at start."""
         self.config = config
         self._config_path = config_path
         self._controller = controller
@@ -95,6 +96,7 @@ class App:
         self._spawn = spawn
         self.mic_list = mic_list or (lambda: [])
         self.meter_factory = meter_factory
+        self._unloadable = tuple(unloadable)
         self._job = None
         self._settings = None
         self._wizard = None
@@ -131,8 +133,13 @@ class App:
         if self._model is None:
             self.open_wizard()
         elif self._model != self.config.model:
-            self._tray.notify(f"{self.config.model} isn't downloaded yet; using {self._model}. "
-                              "Open Settings and press Save to download it.")
+            if self.config.model in self._unloadable:  # QA B2
+                self._tray.notify(f"{self.config.model} could not be loaded; using "
+                                  f"{self._model}. Open Settings and press Save to download "
+                                  "it again.")
+            else:
+                self._tray.notify(f"{self.config.model} isn't downloaded yet; using "
+                                  f"{self._model}. Open Settings and press Save to download it.")
         else:
             self._tray.notify(f"Ready. Hold {self.hotkey_label()} to dictate.")
 
@@ -295,6 +302,8 @@ class App:
                 return
             self._cancel_job()
         if target == (self._model, self._language):
+            self._refresh()  # a cancelled download's progress goes (QA B1)
+            self._tell_wizard()
             return
         job = self._job = _Job(name, language, self._models.needs_download(name))
         if job.downloading:

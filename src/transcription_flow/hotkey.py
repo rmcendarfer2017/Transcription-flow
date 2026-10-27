@@ -57,6 +57,7 @@ LLKHF_LOWER_IL_INJECTED, LLKHF_INJECTED = 0x02, 0x10
 SPI_GETFILTERKEYS = 0x0032
 FKF_FILTERKEYSON = 0x01
 DESKTOP_SWITCHDESKTOP = 0x0100  # the access OpenInputDesktop needs for SwitchDesktop
+ERROR_ACCESS_DENIED = 5  # OpenInputDesktop's error on the lock screen or a UAC prompt
 
 
 @dataclass(frozen=True)
@@ -108,8 +109,13 @@ class WindowsKeyRepeat:
     unknown). Anything that can't be read gives the floor, never a crash.
     """
 
-    def __init__(self, user32=None):
+    def __init__(self, user32=None, last_error=None):
+        """``user32``/``last_error``: stand-ins for tests (``last_error()``
+        reads the error of the last call made through ``user32``)."""
         self._user32 = user32
+        self._desktop_user32 = user32
+        self._last_error = last_error
+        self._desktop_error_logged = False
 
     def _api(self):
         if self._user32 is None:
@@ -137,12 +143,23 @@ class WindowsKeyRepeat:
 
     def desktop_locked(self):
         """True while the input desktop isn't ours: the lock screen or a
-        UAC prompt, where our hook sees no keys. None when unknown."""
+        UAC prompt, where our hook sees no keys. None when unknown,
+        including an OpenInputDesktop failure other than access denied
+        (review-m3 F7: an RDP or kiosk session may always fail it, and
+        reading that as locked would cancel every hold)."""
         try:
-            api = self._api()
+            if self._desktop_user32 is None:  # keeps each call's last error
+                self._desktop_user32 = ctypes.WinDLL("user32", use_last_error=True)
+            api = self._desktop_user32
             handle = api.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
             if not handle:
-                return True
+                error = (self._last_error or ctypes.get_last_error)()
+                if error == ERROR_ACCESS_DENIED:
+                    return True
+                if not self._desktop_error_logged:
+                    self._desktop_error_logged = True
+                    log.warning("the lock screen can't be detected here (error %d)", error)
+                return None
             try:  # switching to the desktop that already has input fails only when locked
                 return not api.SwitchDesktop(handle)
             finally:

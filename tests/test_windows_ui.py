@@ -156,7 +156,8 @@ def test_wizard_window_with_no_microphone_says_so(root):
     win.close()
 
 
-def test_settings_window_lists_mics_and_runs_the_meter(root):
+def test_settings_window_lists_mics_and_runs_the_meter_only_when_asked(root):
+    """review-m3 F4: opening Settings doesn't open the mic; Test or a pick does."""
     from test_wizard import FakeApp
 
     from transcription_flow.ui.settings import Form, SettingsWindow
@@ -166,7 +167,10 @@ def test_settings_window_lists_mics_and_runs_the_meter(root):
     form = Form("right_ctrl", "small.en", "en", "type", False, False, "USB mic")
     win = SettingsWindow(root, form, True, saved.append, app=app)
     root.update()
-    assert win.mic.get() == "USB mic (not connected)" and meters[0].device == "USB mic"
+    assert win.mic.get() == "USB mic (not connected)" and meters == []
+    win.test_button.invoke()
+    root.update()
+    assert meters[0].device == "USB mic" and meters[0].started == 1
     win.mic.set("Laptop mic")
     win.mic.event_generate("<<ComboboxSelected>>")
     root.update()

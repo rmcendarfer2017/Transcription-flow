@@ -1,9 +1,11 @@
 """ModelService: startup choice, download with cancel, load and re-check."""
 
 import threading
+import time
 
 import pytest
 
+from helpers import wait_for
 from transcription_flow import models
 from transcription_flow.model_service import Cancelled, ModelService
 
@@ -76,8 +78,9 @@ def test_startup_prefers_the_default_over_a_larger_installed_model(tmp_path):
 def test_download_reports_progress_and_passes_the_manifest(service):
     seen = []
 
-    def fake_download(name, folder, progress, verify, manifest):
+    def fake_download(name, folder, progress, verify, manifest, before_write):
         seen.append((name, folder, verify, manifest is MANIFEST))
+        before_write()
         progress(5, 10)
 
     service._download = fake_download
@@ -89,7 +92,7 @@ def test_download_reports_progress_and_passes_the_manifest(service):
 def test_a_cancelled_download_stops_at_the_next_progress_step(service):
     cancel = threading.Event()
 
-    def fake_download(name, folder, progress, verify, manifest):
+    def fake_download(name, folder, progress, verify, manifest, before_write):
         progress(1, 10)
         cancel.set()
         progress(2, 10)
@@ -98,6 +101,82 @@ def test_a_cancelled_download_stops_at_the_next_progress_step(service):
     service._download = fake_download
     with pytest.raises(Cancelled):
         service.download("tiny.en", lambda d, t: None, cancel)
+
+
+def test_a_cancel_stops_before_the_next_block_is_written(service):
+    cancel = threading.Event()
+
+    def fake_download(name, folder, progress, verify, manifest, before_write):
+        before_write()  # not cancelled: the block may be written
+        cancel.set()
+        before_write()
+        pytest.fail("wrote a block after the cancel")
+
+    service._download = fake_download
+    with pytest.raises(Cancelled):
+        service.download("tiny.en", lambda d, t: None, cancel)
+
+
+def test_a_restart_waits_for_the_cancelled_download_of_the_same_model(service):
+    """review-m3 F2: Cancel then Download again at once. The old download
+    may still be inside a read; the new one must not start until it stops."""
+    inside, release, events = threading.Event(), threading.Event(), []
+
+    def fake_download(name, folder, progress, verify, manifest, before_write):
+        events.append(("start", name))
+        if len(events) == 1:  # the first job: a slow read
+            inside.set()
+            assert release.wait(5), "the test never released the first download"
+            before_write()  # it then finds the cancel
+        events.append(("end", name))
+
+    service._download = fake_download
+    first_cancel, errors = threading.Event(), []
+
+    def run(cancel):
+        try:
+            service.download("small.en", lambda d, t: None, cancel)
+        except Cancelled:
+            errors.append("cancelled")
+
+    first = threading.Thread(target=run, args=(first_cancel,))
+    first.start()
+    assert inside.wait(5)
+    first_cancel.set()
+    second = threading.Thread(target=run, args=(threading.Event(),))
+    second.start()
+    second.join(0.3)
+    assert events == [("start", "small.en")]  # the restart is waiting
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert errors == ["cancelled"]
+    assert events == [("start", "small.en"), ("start", "small.en"), ("end", "small.en")]
+
+
+def test_downloads_of_different_models_do_not_wait_for_each_other(service):
+    inside, release, started = threading.Event(), threading.Event(), []
+
+    def fake_download(name, folder, progress, verify, manifest, before_write):
+        started.append(name)
+        if name == "small.en":
+            inside.set()
+            assert release.wait(5)
+
+    service._download = fake_download
+    first, second = (threading.Thread(target=service.download,
+                                      args=(name, lambda d, t: None, threading.Event()))
+                     for name in ("small.en", "tiny.en"))
+    first.start()
+    assert inside.wait(5)
+    try:
+        second.start()
+        second.join(2)
+        assert started == ["small.en", "tiny.en"] and not second.is_alive()  # didn't wait
+    finally:
+        release.set()
+        first.join(5)
+        second.join(5)
 
 
 def test_load_maps_auto_to_none_and_uses_the_device(service):
@@ -115,7 +194,8 @@ def test_a_model_that_failed_to_load_is_rechecked_before_the_next_try(service):
         service.load("small.en", "en")
     assert service.needs_download("small.en")  # installed, but suspect
     verifies = []
-    service._download = lambda name, folder, progress, verify, manifest: verifies.append(verify)
+    service._download = lambda name, folder, progress, verify, manifest, before_write: (
+        verifies.append(verify))
     service.download("small.en", lambda d, t: None, threading.Event())
     assert verifies == [True]
     FakeEngine.broken = False
@@ -129,3 +209,84 @@ def test_the_real_downloader_is_looked_up_at_call_time(service, monkeypatch):
     service._download = None
     service.download("base.en", lambda d, t: None, threading.Event())
     assert calls == ["base.en"]
+
+
+class SlowServer:
+    """Sends a file in pieces with a pause between them, with Range support."""
+
+    def __init__(self, data, piece=64 << 10, pause=0.05):
+        import http.server
+
+        self.data, self.ranges = data, []
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):  # noqa: N802
+                rng = self.headers.get("Range")
+                server.ranges.append(rng)
+                start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+                self.send_response(206 if rng else 200)
+                self.send_header("Content-Length", str(len(data) - start))
+                self.end_headers()
+                for i in range(start, len(data), piece):
+                    try:
+                        self.wfile.write(data[i:i + piece])
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    time.sleep(pause)
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def test_cancel_inside_a_read_then_download_again_resumes_cleanly(tmp_path, monkeypatch):
+    """review-m3 F2 with the real downloader (the review's race probe): the
+    first download is cancelled while blocked in a read, and the same model
+    is started again at once. Before the fix both wrote to the .part file
+    and the restart failed its checksum, deleting what was fetched."""
+    import hashlib
+    import os
+
+    data = os.urandom(1 << 20)
+    manifest = {"version": 1, "models": {"m": {"repo": "r/m", "revision": "x", "files": [
+        {"name": "model.bin", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}]}}}
+    monkeypatch.setattr(models, "CHUNK", 256 << 10)  # each read waits for 4 pieces
+    server = SlowServer(data)
+    try:
+        service = ModelService(tmp_path / "models", manifest=manifest, download=(
+            lambda *a, **k: models.download(*a, base_url=server.url, timeout=10, **k)))
+        results, first_cancel = {}, threading.Event()
+
+        def run(tag, cancel):
+            try:
+                service.download("m", lambda d, t: None, cancel)
+                results[tag] = "ok"
+            except Cancelled:
+                results[tag] = "cancelled"
+            except Exception as err:  # the bug: ChecksumError
+                results[tag] = f"{type(err).__name__}: {err}"
+
+        first = threading.Thread(target=run, args=("first", first_cancel))
+        first.start()
+        part = models.model_path("m", service.folder) / "model.bin.part"
+        assert wait_for(lambda: part.exists() and part.stat().st_size >= 256 << 10, 10)
+        time.sleep(0.1)  # inside the next read
+        first_cancel.set()
+        second = threading.Thread(target=run, args=("second", threading.Event()))
+        second.start()
+        first.join(15)
+        second.join(30)
+        assert results == {"first": "cancelled", "second": "ok"}
+        assert (models.model_path("m", service.folder) / "model.bin").read_bytes() == data
+        assert server.ranges[0] is None and server.ranges[-1] is not None  # it resumed
+    finally:
+        server.close()

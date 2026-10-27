@@ -12,7 +12,8 @@ from transcription_flow.model_service import Cancelled
 from transcription_flow.config import Config
 from transcription_flow.hotkey import MISSED_RELEASE, HotkeyUnavailable
 from transcription_flow.ui import display
-from transcription_flow.ui.settings import Form, hotkey_choices, model_choices
+from transcription_flow.ui.settings import (MODEL_NOTE, Form, hotkey_choices, model_choices,
+                                            model_note)
 from transcription_flow.ui.tray import Tray, TrayActions, make_icon
 
 # -- display --------------------------------------------------------------------
@@ -239,6 +240,20 @@ def test_model_choices_are_sized_and_mark_the_default(tmp_path):
     assert list(labels_) == ["tiny.en", "base.en", "small.en"]  # smallest first
     assert labels_["small.en"].endswith("MB, recommended)")
     assert "recommended" not in labels_["tiny.en"]
+
+
+def test_the_settings_note_warns_that_save_downloads_the_model_after_a_fallback(tmp_path):
+    """review-m3 F5: base.en chosen, small.en running: any Save fetches base.en."""
+    from transcription_flow.model_service import ModelService
+
+    service = ModelService(tmp_path)
+    assert model_note(Config(model="small.en"), "small.en", service) == MODEL_NOTE
+    assert model_note(Config(model="small.en"), None, service) == MODEL_NOTE  # the setup window
+    note = model_note(Config(model="base.en"), "small.en", service)
+    assert note.startswith(MODEL_NOTE) and note.endswith(
+        "base.en isn't ready, so dictation uses small.en for now. Save downloads base.en "
+        f"({models.size_label(service.size('base.en'))}) even if you change only something "
+        "else; pick small.en above to keep it instead.")
 
 
 def test_hotkey_choices_are_the_hotkey_table():
@@ -673,6 +688,43 @@ def test_saving_the_same_choice_again_does_not_restart_the_download(shell):
     job = a.job
     save(a, p, model="base.en")
     assert a.job is job and len(p["jobs"]) == 1 and not job.cancel.is_set()
+
+
+def test_saving_with_no_model_change_starts_no_job(shell):
+    """review-m3 R8: a Save that keeps the running model doesn't reload it."""
+    a, p = shell
+    save(a, p, hotkey="f9")
+    assert a.job is None and p["jobs"] == [] and p["models"].calls == []
+
+
+def test_switching_back_to_the_running_model_mid_download_clears_the_progress(shell):
+    """QA B1: the tray and the setup window drop the cancelled download."""
+    a, p = shell
+    a.open_wizard()
+    save(a, p, model="base.en")
+    assert p["tray"].statuses[-1][0] == "Downloading base.en 0%"
+    events = len(p["wizards"][0].events)
+    save(a, p, model="small.en")  # changed their mind: back to the running model
+    assert a.job is None and len(p["jobs"]) == 1
+    assert p["tray"].statuses[-1][0] == "Ready (CPU)"
+    assert len(p["wizards"][0].events) == events + 1
+
+
+def test_a_replaced_job_that_fails_late_leaves_the_new_one_alone(shell):
+    """review-m3 R6: the old job's late failure must not clear the new job,
+    or the new job's success would then be ignored."""
+    a, p = shell
+    save(a, p, model="base.en")
+    first = a.job
+    p["models"].have.add("tiny.en")
+    save(a, p, model="tiny.en")
+    second = a.job
+    a._job_failed(first, "The download failed: offline.")
+    assert a.job is second and p["tray"].statuses[-1][0] == "Loading tiny.en"
+    assert not any(n.startswith("The download failed") for n in p["tray"].notes)
+    run_job(p)  # base.en: cancelled
+    run_job(p)
+    assert a.model == "tiny.en" and a.job is None
 
 
 def test_cancel_download_stops_it_quietly(shell):

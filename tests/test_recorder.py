@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from helpers import FakeSoundDevice, tone
+from helpers import FakeSoundDevice, PortAudioError, tone
 from transcription_flow.recorder import (
     LevelMeter, MicrophoneOpenError, NoMicrophoneError, Recorder, SilentMicrophoneError,
     input_devices, resample,
@@ -194,6 +194,117 @@ def test_no_choice_means_the_default_without_listing():
     assert sd.stream.device is None
 
 
+class RescanningSoundDevice(FakeSoundDevice):
+    """Like PortAudio: query_devices() gives the list read at the last
+    _initialize(); ``plugged`` is what is plugged in now."""
+
+    def __init__(self, devices, **kw):
+        super().__init__(devices=devices, **kw)
+        self.plugged = [dict(d) for d in devices]
+        self._initialized = 1
+        self.restarts = 0
+        self.fail_devices = set()  # indexes whose stream won't open
+
+    def _terminate(self):
+        assert self._initialized == 1, "terminated twice"
+        self._initialized -= 1
+
+    def _initialize(self):
+        self._initialized += 1
+        self.restarts += 1
+        self.devices = [dict(d, index=i) for i, d in enumerate(self.plugged)]
+
+    def InputStream(self, samplerate, channels, dtype, device, callback):  # noqa: N802
+        assert self._initialized == 1, "opened a stream with PortAudio stopped"
+        if device in self.fail_devices:
+            raise PortAudioError("Device unavailable")
+        return super().InputStream(samplerate, channels, dtype, device, callback)
+
+
+def test_a_mic_plugged_in_while_the_app_runs_is_listed():
+    """review-m3 F3: PortAudio's list is read again, not kept from the start."""
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+    assert input_devices(sd) == ["Laptop mic"]
+    sd.plugged.append(mic("New headset"))
+    assert input_devices(sd) == ["Laptop mic", "New headset"]
+
+
+def test_a_mic_unplugged_while_the_app_runs_falls_back_to_the_default():
+    sd = RescanningSoundDevice([mic("Laptop mic"), mic("USB mic")])
+    rec = Recorder(sd=sd, device="USB mic")
+    rec.start()
+    rec.stop()
+    assert sd.stream.device == 1
+    del sd.plugged[1]
+    rec.start()
+    rec.stop()
+    assert sd.stream.device is None  # not the stale index 1
+
+
+def test_the_device_list_is_not_refreshed_while_a_stream_is_open():
+    """A restart would break the warm stream or the open meter."""
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+    rec = Recorder(sd=sd, keep_warm=True)
+    rec.open()
+    restarts = sd.restarts
+    sd.plugged.append(mic("New headset"))
+    assert input_devices(sd) == ["Laptop mic"]  # the old list, the stream is safe
+    m = LevelMeter(sd=sd, device="Laptop mic")
+    m.start()
+    m.stop()
+    assert sd.restarts == restarts
+    rec.close()
+    assert input_devices(sd) == ["Laptop mic", "New headset"]
+
+
+def test_a_failed_refresh_keeps_working_with_the_old_list(caplog):
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+
+    def broken():
+        raise PortAudioError("Error initializing PortAudio")
+
+    sd._initialize = broken
+    assert input_devices(sd) == ["Laptop mic"]
+    assert "could not refresh the device list: PortAudioError" in caplog.text
+
+
+def test_after_a_failed_start_the_next_refresh_starts_portaudio_again():
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+    sd._initialized = 0  # the last _initialize() failed
+    assert input_devices(sd) == ["Laptop mic"] and sd._initialized == 1
+
+
+def test_a_named_mic_that_fails_to_open_is_tried_once_as_the_default(caplog):
+    """review-m3 F3: a mic gone since the list was read, or one that's busy."""
+    sd = RescanningSoundDevice([mic("Laptop mic"), mic("USB mic")])
+    sd.fail_devices = {1}
+    rec = Recorder(sd=sd, device="USB mic")
+    rec.start()
+    assert sd.stream.device is None and sd.stream.started
+    assert "could not be opened; using the Windows default" in caplog.text
+    assert "USB mic" not in caplog.text
+
+
+def test_the_default_mic_failing_to_open_is_not_retried():
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+    sd.fail_devices = {None}
+    with pytest.raises(MicrophoneOpenError):
+        Recorder(sd=sd).start()
+    assert sd.streams == []
+
+
+def test_the_meter_also_uses_a_fresh_list_and_the_default_fallback():
+    sd = RescanningSoundDevice([mic("Laptop mic")])
+    sd.plugged.append(mic("New headset"))
+    m = LevelMeter(sd=sd, device="New headset")
+    m.start()
+    assert sd.stream.device == 1
+    m.stop()
+    sd.fail_devices = {1}
+    m.start()
+    assert sd.stream.device is None
+
+
 class Clock:
     def __init__(self):
         self.now = 100.0
@@ -233,6 +344,15 @@ def test_meter_faint_sound_is_quiet_not_blocked(fake_sd):
     clock.now += LevelMeter.BLOCKED_AFTER
     assert m.status() == LevelMeter.LISTENING
     clock.now += LevelMeter.QUIET_AFTER - LevelMeter.BLOCKED_AFTER
+    assert m.status() == LevelMeter.QUIET
+
+
+def test_meter_sound_once_then_zeros_is_quiet_not_blocked(fake_sd):
+    """review-m3 R10: "any sound yet" is sticky; zeros after it aren't the privacy switch."""
+    m, clock = meter(fake_sd)
+    fake_sd.stream.feed(tone(0.1, amp=0.001))
+    fake_sd.stream.feed(np.zeros(1600))
+    clock.now += LevelMeter.QUIET_AFTER
     assert m.status() == LevelMeter.QUIET
 
 

@@ -21,8 +21,12 @@ log = logging.getLogger(__name__)
 TITLE = "Transcription Flow settings"
 MODEL_NOTE = ("A model that isn't downloaded yet downloads when you save (progress in the tray "
               "icon); the current one keeps working until it's ready.")
+FALLBACK_NOTE = ("{wanted} isn't ready, so dictation uses {running} for now. Save downloads "
+                 "{wanted} ({size}) even if you change only something else; pick {running} "
+                 "above to keep it instead.")
 DEFAULT_MIC_LABEL = "Windows default microphone"
 NO_METER = "The microphone can't be tested here."
+TEST_MIC = "Test"
 
 
 @dataclasses.dataclass
@@ -61,6 +65,16 @@ def model_choices(service) -> dict:
             notes.append("downloaded")
         labels[name] = f"{name} ({', '.join(notes)})"
     return labels
+
+
+def model_note(config: Config, running, service) -> str:
+    """The note under the choices. After a start-up fallback (the chosen
+    model isn't the one running), any Save downloads the chosen one, so
+    the note says so (review-m3 F5)."""
+    if running is None or running == config.model:
+        return MODEL_NOTE
+    return f"{MODEL_NOTE}\n\n" + FALLBACK_NOTE.format(
+        wanted=config.model, running=running, size=size_label(service.size(config.model)))
 
 
 def mic_choices(available, saved: str) -> dict:
@@ -162,9 +176,15 @@ class SettingsWindow:
         self.language = self._combo(frame, 2, "Language", self._languages, form.language)
         self.output = self._combo(frame, 3, "Output", self._outputs, form.output)
         self.mic = self._combo(frame, 4, "Microphone", self._mics, form.mic)
+        # The meter opens the mic, so it runs only on a pick or Test (review-m3 F4):
+        # opening Settings to change the hotkey shouldn't turn on the mic icon.
         self.mic.bind("<<ComboboxSelected>>", lambda e: self._start_meter())
-        self.meter_bar = ttk.Progressbar(frame, length=200, maximum=1.0)
-        self.meter_bar.grid(row=5, column=1, sticky="w", pady=(0, 4))
+        meter_row = ttk.Frame(frame)
+        meter_row.grid(row=5, column=1, sticky="w", pady=(0, 4))
+        self.meter_bar = ttk.Progressbar(meter_row, length=200, maximum=1.0)
+        self.meter_bar.grid(row=0, column=0)
+        self.test_button = ttk.Button(meter_row, text=TEST_MIC, command=self._start_meter)
+        self.test_button.grid(row=0, column=1, padx=(8, 0))
         self._meter = MeterPoller(win, app.meter_factory if app is not None else None,
                                   lambda meter: self.meter_bar.configure(value=meter.level()))
 
@@ -178,8 +198,9 @@ class SettingsWindow:
         check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         if not autostart_available:
             check.state(["disabled"])
-        ttk.Label(frame, text=MODEL_NOTE, wraplength=360).grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        note = model_note(app.config, app.model, service) if app is not None else MODEL_NOTE
+        self.note = ttk.Label(frame, text=note, wraplength=360)
+        self.note.grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=(16, 0))
@@ -188,7 +209,6 @@ class SettingsWindow:
                                                                                     column=1)
         win.bind("<Escape>", lambda e: self.close())
         self._update_languages()
-        self._start_meter()
         win.lift()
         win.focus_force()
 

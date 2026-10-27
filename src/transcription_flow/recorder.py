@@ -10,6 +10,7 @@ import collections
 import logging
 import threading
 import time
+import weakref
 
 import numpy as np
 
@@ -46,6 +47,27 @@ SILENT_MESSAGE = (
 )
 
 
+# PortAudio builds its device list (and picks the Windows default) once,
+# when it starts. Restarting it is the only way to see a microphone that
+# was plugged in or out since (review-m3 F3), and a restart would break any
+# open stream, so it happens only while none of ours is open. The lock
+# keeps a restart from running between another thread's lookup and open.
+_PA_LOCK = threading.RLock()
+_open_streams = weakref.WeakKeyDictionary()  # the sounddevice module -> streams we have open
+
+
+def _rescan(sd) -> None:
+    """Restart PortAudio so its device list is current. _PA_LOCK held."""
+    if _open_streams.get(sd) or not hasattr(sd, "_terminate"):
+        return
+    try:
+        if getattr(sd, "_initialized", 1):
+            sd._terminate()
+        sd._initialize()
+    except Exception as exc:  # PortAudioError: keep the old list
+        log.warning("could not refresh the device list: %s", type(exc).__name__)
+
+
 def _sounddevice(sd):
     if sd is None:
         import sounddevice
@@ -80,8 +102,12 @@ def _inputs(sd) -> list:
 
 
 def input_devices(sd=None) -> list:
-    """Names for the microphone dropdown (the Windows default is offered separately)."""
-    return [name for _i, name in _inputs(_sounddevice(sd))]
+    """Names for the microphone dropdown (the Windows default is offered
+    separately), as plugged in now."""
+    sd = _sounddevice(sd)
+    with _PA_LOCK:
+        _rescan(sd)
+        return [name for _i, name in _inputs(sd)]
 
 
 def find_input(sd, name):
@@ -123,9 +149,34 @@ def open_input(sd, device, callback):
             log.info("input stream at %d Hz failed: %s", rate, type(exc).__name__)
             continue
         log.info("microphone open at %d Hz", rate)
+        _open_streams[sd] = _open_streams.get(sd, 0) + 1
         return stream, rate
     log.warning("could not open microphone: %r", last)
     raise MicrophoneOpenError(OPEN_FAILED_MESSAGE)
+
+
+def check_input(sd, name) -> None:
+    """Raise NoMicrophoneError if ``name`` (None: the default) and the
+    Windows default both have no input."""
+    with _PA_LOCK:
+        _rescan(sd)
+        input_rate(sd, find_input(sd, name))
+
+
+def open_named(sd, name, callback):
+    """open_input for a microphone by name (None: the Windows default), on
+    a fresh device list. A named one that fails to open (unplugged since
+    the list was read, or busy) is tried once more as the default."""
+    with _PA_LOCK:
+        _rescan(sd)
+        index = find_input(sd, name)
+        try:
+            return open_input(sd, index, callback)
+        except MicrophoneError:
+            if index is None:
+                raise
+            log.warning("the chosen microphone could not be opened; using the Windows default")
+            return open_input(sd, None, callback)
 
 
 def _mono(indata) -> np.ndarray:
@@ -138,12 +189,14 @@ def _level(chunk) -> float:
     return min(float(np.sqrt(np.mean(np.square(chunk)))) * LEVEL_GAIN, 1.0) if len(chunk) else 0.0
 
 
-def _close_stream(stream) -> None:
-    try:
-        stream.stop()
-        stream.close()
-    except Exception as exc:
-        log.warning("closing microphone failed: %r", exc)
+def _close_stream(sd, stream) -> None:
+    with _PA_LOCK:
+        _open_streams[sd] = max(_open_streams.get(sd, 0) - 1, 0)
+        try:
+            stream.stop()
+            stream.close()
+        except Exception as exc:
+            log.warning("closing microphone failed: %r", exc)
 
 
 def resample(audio: np.ndarray, rate: int, target: int = TARGET_RATE) -> np.ndarray:
@@ -187,20 +240,19 @@ class Recorder:
 
     def check(self) -> None:
         """Raise NoMicrophoneError if there is no input device."""
-        input_rate(self.sd, find_input(self.sd, self.device))
+        check_input(self.sd, self.device)
 
     def open(self) -> None:
         if self._stream is not None:
             return
-        self._stream, self._rate = open_input(self.sd, find_input(self.sd, self.device),
-                                              self._callback)
+        self._stream, self._rate = open_named(self.sd, self.device, self._callback)
         self._preroll.clear()
         self._preroll_samples = 0
 
     def _close(self) -> None:
         stream, self._stream = self._stream, None
         if stream is not None:
-            _close_stream(stream)
+            _close_stream(self.sd, stream)
 
     def close(self) -> None:
         with self._lock:
@@ -292,12 +344,12 @@ class LevelMeter:
         sd = self._sd = _sounddevice(self._sd)
         with self._lock:
             self._reset()
-        self._stream, _rate = open_input(sd, find_input(sd, self.device), self._callback)
+        self._stream, _rate = open_named(sd, self.device, self._callback)
 
     def stop(self) -> None:
         stream, self._stream = self._stream, None
         if stream is not None:
-            _close_stream(stream)
+            _close_stream(self._sd, stream)
 
     def _callback(self, indata, frames, time_info, status):
         chunk = _mono(indata)

@@ -32,7 +32,11 @@ class WhisperEngine:
         return self
 
     def transcribe(self, audio) -> str:
+        """The text, or "" when there is none. Raises
+        hallucination.ShortPhraseDropped for a dropped short phrase."""
         self.load()
-        segments, info = self._model.transcribe(audio, language=self.language, vad_filter=True)
+        segments, _info = self._model.transcribe(audio, language=self.language, vad_filter=True)
         text = "".join(segment.text for segment in segments).strip()
-        return hallucination.clean(text, info.duration_after_vad) if text else ""
+        if not text:
+            return ""
+        return hallucination.clean(text, lambda: hallucination.speech_seconds(audio))

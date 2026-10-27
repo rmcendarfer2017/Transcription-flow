@@ -6,8 +6,9 @@ import pytest
 
 from transcription_flow.app import _Job
 from transcription_flow.config import Config
-from transcription_flow.recorder import LevelMeter
+from transcription_flow.recorder import OPEN_FAILED_MESSAGE, LevelMeter, MicrophoneOpenError
 from transcription_flow.ui import wizard
+from transcription_flow.ui.settings import NO_METER, MeterPoller
 from transcription_flow.ui.wizard import STEPS, WizardFlow
 
 
@@ -206,3 +207,53 @@ def test_texts_say_inspired_by_and_never_clone():
 def test_try_text_names_the_hotkey(flow):
     flow.app.config = dataclasses.replace(flow.app.config, hotkey="f9")
     assert "hold F9" in flow.try_text()
+
+
+# -- MeterPoller without a display (review-m3 R11) ----------------------------------
+
+class FakeWidget:
+    def __init__(self):
+        self.after_calls, self.cancelled = [], []
+
+    def after(self, ms, fn):
+        self.after_calls.append((ms, fn))
+        return f"after#{len(self.after_calls)}"
+
+    def after_cancel(self, ident):
+        self.cancelled.append(ident)
+
+
+class StubMeter:
+    def __init__(self, device, error=None):
+        self.device, self.error, self.stopped = device, error, False
+
+    def start(self):
+        if self.error:
+            raise self.error
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.mark.parametrize("error, message", [
+    (MicrophoneOpenError(OPEN_FAILED_MESSAGE), OPEN_FAILED_MESSAGE),
+    (OSError("PortAudio library not found"), NO_METER),
+])
+def test_a_meter_that_fails_to_open_says_why_and_never_ticks(error, message):
+    widget, ticks = FakeWidget(), []
+    poller = MeterPoller(widget, lambda device: StubMeter(device, error), ticks.append)
+    assert poller.start("Headset mic") == message
+    assert ticks == [] and widget.after_calls == []
+
+
+def test_a_meter_ticks_until_stopped_and_one_runs_at_a_time():
+    widget, ticks, meters = FakeWidget(), [], []
+    poller = MeterPoller(widget, lambda d: meters.append(StubMeter(d)) or meters[-1], ticks.append)
+    assert poller.start(None) is None
+    assert ticks == [meters[0]] and widget.after_calls[0][0] == MeterPoller.METER_MS
+    widget.after_calls[0][1]()  # the Tk loop runs the next tick
+    assert ticks == [meters[0], meters[0]]
+    poller.start("Headset mic")
+    assert meters[0].stopped and widget.cancelled == ["after#2"]
+    poller.stop()
+    assert meters[1].stopped and widget.cancelled == ["after#2", "after#3"]
