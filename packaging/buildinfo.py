@@ -3,6 +3,9 @@ CI workflow and the static tests (tests/test_packaging.py).
 
     python packaging/buildinfo.py version            -> 0.1.0.dev0
     python packaging/buildinfo.py numeric-version    -> 0.1.0.0 (Windows version fields)
+    python packaging/buildinfo.py tag-version v0.1.0 -> 0.1.0 (exit 1 on a bad tag)
+    python packaging/buildinfo.py stamp-version v0.1.0  (release builds: __version__ = "0.1.0")
+    python packaging/buildinfo.py release-notes 0.1.0   -> that version's CHANGELOG.md section
     python packaging/buildinfo.py check-onedir DIR   -> exit 1 with the problems found
     python packaging/buildinfo.py portable-zip DIR OUT.zip
 
@@ -64,6 +67,59 @@ def app_version(root: Path = ROOT) -> str:
     the runtime environment to the build process)."""
     text = (root / "src" / "transcription_flow" / "__init__.py").read_text("utf-8")
     return re.search(r'^__version__ = "([^"]+)"', text, re.M).group(1)
+
+
+# Release tags: v1.2.3, or a pre-release such as v1.2.3rc1 (PEP 440 spelling,
+# so the tag is the version the app reports).
+_TAG = re.compile(r"v(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)")
+_VERSION_LINE = re.compile(r'^__version__ = "[^"]+"$', re.M)
+
+
+def tag_version(tag: str) -> str:
+    """'v0.1.0' -> '0.1.0'. Anything else stops the release."""
+    match = _TAG.fullmatch(tag)
+    if not match:
+        raise SystemExit(f"{tag!r} is not a release tag (v1.2.3 or v1.2.3rc1)")
+    return match.group(1)
+
+
+def _release(version: str) -> str:
+    """'0.1.0.dev0' -> '0.1.0'; '0.1.0rc1' -> '0.1.0'."""
+    return re.match(r"\d+\.\d+\.\d+", version).group(0)
+
+
+def stamp_version(tag: str, root: Path = ROOT) -> str:
+    """Set __version__ to the tag's version in a release build's checkout, so
+    the exe, the installer and the file names say 0.1.0, not 0.1.0.dev0.
+    The tag must be a release of the version the source is working towards:
+    tagging v0.2.0 on a 0.1.0.dev0 tree stops (bump __init__.py first)."""
+    version = tag_version(tag)
+    init = root / "src" / "transcription_flow" / "__init__.py"
+    source = app_version(root)
+    if _release(source) != _release(version):
+        raise SystemExit(f"tag {tag} does not match the source version {source}; "
+                         f"set __version__ in {init.relative_to(root)} first")
+    text = init.read_text("utf-8")
+    init.write_text(_VERSION_LINE.sub(f'__version__ = "{version}"', text, count=1), "utf-8")
+    return version
+
+
+def release_notes(version: str, changelog: Path = ROOT / "CHANGELOG.md") -> str:
+    """The body of the '## [version] - YYYY-MM-DD' section of the changelog.
+    A missing, undated ('Unreleased') or empty section stops the release."""
+    text = changelog.read_text("utf-8")
+    heading = re.search(rf"^## \[{re.escape(version)}\](.*)$", text, re.M)
+    if not heading:
+        raise SystemExit(f"CHANGELOG.md has no '## [{version}]' section")
+    if not re.fullmatch(r" - \d{4}-\d{2}-\d{2}", heading.group(1).rstrip()):
+        raise SystemExit(f"CHANGELOG.md: give '## [{version}]' its release date "
+                         f"('## [{version}] - YYYY-MM-DD') before tagging")
+    rest = text[heading.end():]
+    end = re.search(r"^## |^\[[^\]]+\]: ", rest, re.M)
+    body = rest[:end.start() if end else None].strip()
+    if not body:
+        raise SystemExit(f"CHANGELOG.md: the '## [{version}]' section is empty")
+    return body + "\n"
 
 
 def numeric_version(version: str) -> str:
@@ -268,6 +324,9 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("version")
     sub.add_parser("numeric-version")
+    for name in ("tag-version", "stamp-version"):
+        sub.add_parser(name).add_argument("tag")
+    sub.add_parser("release-notes").add_argument("version")
     c = sub.add_parser("check-onedir")
     c.add_argument("onedir", type=Path)
     z = sub.add_parser("portable-zip")
@@ -278,6 +337,12 @@ def main(argv=None) -> int:
         print(app_version())
     elif args.cmd == "numeric-version":
         print(numeric_version(app_version()))
+    elif args.cmd == "tag-version":
+        print(tag_version(args.tag))
+    elif args.cmd == "stamp-version":
+        print(stamp_version(args.tag))
+    elif args.cmd == "release-notes":
+        sys.stdout.write(release_notes(args.version))
     elif args.cmd == "check-onedir":
         problems = check_onedir(args.onedir)
         for problem in problems:
