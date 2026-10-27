@@ -2,6 +2,7 @@
 __init__ has already applied the privacy environment (_env)."""
 
 import argparse
+import functools
 import json
 import logging
 import sys
@@ -21,8 +22,8 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="transcription-flow",
                                 description="Local push-to-talk dictation.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    p.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(load_manifest()["models"]),
-                   help="model name (default: %(default)s)")
+    p.add_argument("--model", choices=sorted(load_manifest()["models"]),
+                   help=f"model name (default: the one in settings, else {DEFAULT_MODEL})")
     p.add_argument("--models-dir", type=Path, help="folder that holds downloaded models")
     p.add_argument("--model-dir", type=Path,
                    help="use this model folder as is (skips the manifest check and download)")
@@ -38,6 +39,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--selftest", type=Path, metavar="WAV",
                    help="transcribe WAV on CPU, print JSON, exit 0 (ok) or 1")
     p.add_argument("--expect", help="with --selftest: text the transcript must contain")
+    p.add_argument("--tray", action="store_true",
+                   help="started at sign-in: stay in the tray (the M3 first-run window skips "
+                        "itself)")
+    p.add_argument("--reset-config", action="store_true",
+                   help="put every setting back to its default, then exit")
     p.add_argument("--probe-gpu", action="store_true", help=argparse.SUPPRESS)
     return p
 
@@ -96,56 +102,80 @@ def _selftest(wav: Path, model_dir: Path, expect) -> int:
 
 def _notify(message: str, exc_info: bool = False) -> None:
     """User-facing problem: the console (one line) and the log file, which
-    also gets the traceback. M2 adds tray toasts."""
+    also gets the traceback. Once the tray is up, App.report_error adds a toast."""
     log.warning(message, exc_info=exc_info)
 
 
-def run_app(args, model_dir: Path, models_dir: Path) -> int:
-    from . import logsetup, models, paths, single_instance
+def run_app(args, models_dir: Path) -> int:
+    """Everything that writes app.log or the settings: the single-instance
+    guard comes first, so a second copy never opens the log (review-m1)."""
+    from . import config, logsetup, models, paths, single_instance
 
-    log_file = logsetup.setup(paths.logs_dir())
     try:
         guard = single_instance.acquire(paths.data_dir())
     except single_instance.AlreadyRunning:
-        log.error("Transcription Flow is already running; this copy will exit.")
+        if sys.stderr is not None:
+            print("[!] Transcription Flow is already running; this copy will exit.",
+                  file=sys.stderr)
         return EXIT_ALREADY_RUNNING
     try:
-        if args.model_dir is None and not models.is_installed(args.model, models_dir):
-            print(f"First run: downloading the {args.model} model (one time only).",
-                  file=sys.stderr)
-            if _download(args.model, models_dir) is None:
+        log_file = logsetup.setup(paths.logs_dir())
+        if args.reset_config:
+            config.save(config.Config(), paths.config_file())
+            print(f"Settings reset: {paths.config_file()}")
+            return EXIT_OK
+        settings = config.load(paths.config_file())
+        name = args.model or settings.model
+        if args.download_model or args.verify:
+            folder = _download(name, models_dir, verify=args.verify)
+            if folder is None:
                 return EXIT_SETUP
-        return _run_dictation(args, model_dir, log_file)
+            print(folder)
+            return EXIT_OK
+        model_dir = args.model_dir or models.model_path(name, models_dir)
+        if args.model_dir is None and not models.is_installed(name, models_dir):
+            print(f"First run: downloading the {name} model (one time only).", file=sys.stderr)
+            if _download(name, models_dir) is None:
+                return EXIT_SETUP
+        return _run_dictation(args, settings, model_dir, log_file)
     finally:
         guard.release()
 
 
-def _run_dictation(args, model_dir, log_file) -> int:
-    from . import gpu_probe, paths
+def _run_dictation(args, settings, model_dir, log_file) -> int:
+    from . import autostart, gpu_probe, paths
+    from .app import App
     from .controller import Controller
     from .engine import WhisperEngine
-    from .hotkey import DEFAULT_HOTKEY, KeyboardHotkey
-    from .output import KeyboardTyper
+    from .hotkey import Hotkey, HotkeyUnavailable
+    from .output import make_output
     from .recorder import MicrophoneError, Recorder
+    from .ui import display
 
     device = gpu_probe.choose_device(args.device, model_dir, paths.data_dir() / "gpu_probe.json")
+    language = None if settings.language == "auto" else settings.language
     try:
-        engine = WhisperEngine(model_dir, device=device).load()
+        engine = WhisperEngine(model_dir, device=device, language=language).load()
     except Exception as err:
         _notify(f"The speech model could not be loaded ({type(err).__name__}). Log: {log_file}",
                 exc_info=True)
         return EXIT_SETUP
 
-    recorder = Recorder(keep_warm=args.keep_mic_warm)
+    keep_warm = args.keep_mic_warm or settings.keep_mic_warm
+    recorder = Recorder(keep_warm=keep_warm)
+    startup_errors = []
     try:
         recorder.check()
-        if args.keep_mic_warm:
+        if keep_warm:
             recorder.open()
-    except MicrophoneError as err:
-        _notify(str(err))  # keep running: the next press tries again
+    except MicrophoneError as err:  # the recorder logged it; keep running
+        startup_errors.append(str(err))
 
+    log.info("DPI awareness: %s", display.enable_dpi_awareness())  # before the first window
     try:
         from .ui.overlay import Overlay
+        from .ui.settings import SettingsWindow
+        from .ui.tray import Tray
 
         overlay = Overlay(recorder.levels)
     except Exception as err:
@@ -153,23 +183,50 @@ def _run_dictation(args, model_dir, log_file) -> int:
                 exc_info=True)
         return EXIT_SETUP
 
-    controller = Controller(recorder, engine, KeyboardTyper(), ui=overlay.post, on_error=_notify)
+    app = None
+
+    def report(message):
+        if app is None:
+            _notify(message)
+        else:
+            app.report_error(message)
+
+    def on_state(state):
+        overlay.post(state)
+        if app is not None:
+            app.on_state(state)
+
+    # The settle is a file-only setting, read at start.
+    output_factory = functools.partial(make_output, settle=settings.paste_settle_seconds)
+    controller = Controller(recorder, engine, output_factory(settings.output), ui=on_state,
+                            on_error=report)
     controller.start()
-    hotkey = KeyboardHotkey(DEFAULT_HOTKEY)
+    app = App(settings, paths.config_file(), controller,
+              Hotkey(lambda unchecked: app.press(unchecked), controller.release,
+                     lambda r: app.cancel_recording(r)),
+              Tray, autostart.RunKey(), ui_call=overlay.call, stop_ui=overlay.quit,
+              settings_factory=lambda *a: SettingsWindow(overlay.root, *a),
+              output_factory=output_factory,
+              launch_command=autostart.launch_command, log_dir=paths.logs_dir(), device=device)
     try:
-        hotkey.start(controller.press, controller.release, controller.other_key)
-    except ImportError:
-        _notify("The global hotkey needs Windows (the 'keyboard' package) for now.")
+        app.start()
+    except HotkeyUnavailable as err:
+        _notify(str(err))
         controller.shutdown(timeout=5)
         return EXIT_SETUP
+    for message in startup_errors:
+        app.report_error(message)
     log.info("ready on %s", device)
-    print(f"Ready. Hold {DEFAULT_HOTKEY} to dictate, release to type the text.", file=sys.stderr)
+    if sys.stderr is not None:
+        print(f"Ready. Hold {app.hotkey_label()} to dictate, release to type the text. "
+              "Quit from the tray icon.", file=sys.stderr)
     try:
         overlay.run()
     except KeyboardInterrupt:
         pass
     finally:
-        hotkey.stop()
+        if not app.quitting:
+            app.quit()
         controller.shutdown(timeout=5)
     return EXIT_OK
 
@@ -186,21 +243,15 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
-    from . import logsetup, models, paths
+    from . import models, paths
 
     models_dir = args.models_dir or paths.models_dir()
-    model_dir = args.model_dir or models.model_path(args.model, models_dir)
-    if args.probe_gpu:
-        from . import gpu_probe
+    if args.probe_gpu or args.selftest:
+        model_dir = args.model_dir or models.model_path(args.model or models.DEFAULT_MODEL,
+                                                        models_dir)
+        if args.probe_gpu:
+            from . import gpu_probe
 
-        return gpu_probe.run_child(model_dir)
-    if args.selftest:
+            return gpu_probe.run_child(model_dir)
         return _selftest(args.selftest, model_dir, args.expect)
-    if args.download_model or args.verify:
-        logsetup.setup(paths.logs_dir())
-        folder = _download(args.model, models_dir, verify=args.verify)
-        if folder is None:
-            return EXIT_SETUP
-        print(folder)
-        return EXIT_OK
-    return run_app(args, model_dir, models_dir)
+    return run_app(args, models_dir)

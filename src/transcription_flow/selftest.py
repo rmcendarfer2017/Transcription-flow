@@ -17,6 +17,9 @@ from .engine import WhisperEngine
 from .recorder import TARGET_RATE, resample
 
 _PCM, _FLOAT, _EXTENSIBLE = 1, 3, 0xFFFE
+# A header rate outside this range is broken or hostile: rate=1 would ask the
+# resampler for 16 000 times the samples (review N1).
+MIN_RATE, MAX_RATE = 1000, 768000
 # (format, bytes per sample) -> (numpy dtype, offset, scale) to map samples to -1..1.
 # 24-bit PCM is widened to <i4 with a zero low byte first.
 _DECODE = {(_PCM, 1): ("u1", 128.0, 128.0), (_PCM, 2): ("<i2", 0.0, 2.0 ** 15),
@@ -50,8 +53,10 @@ def read_wav(path: Path) -> np.ndarray:
     tag, channels, rate, _, block, _ = struct.unpack("<HHIIHH", chunks["fmt"][:16])
     if tag == _EXTENSIBLE and len(chunks["fmt"]) >= 26:
         tag = struct.unpack("<H", chunks["fmt"][24:26])[0]  # first 2 bytes of the sub-format
-    if not channels or not rate or block % channels:
+    if not channels or not block or block % channels:
         raise ValueError("WAV file with a broken format chunk")
+    if not MIN_RATE <= rate <= MAX_RATE:
+        raise ValueError(f"unsupported WAV sample rate ({rate} Hz)")
     width = block // channels
     data = chunks["data"][:len(chunks["data"]) // block * block]
     if (tag, width) not in _DECODE:

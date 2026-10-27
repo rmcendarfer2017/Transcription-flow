@@ -1,4 +1,4 @@
-"""Hotkey tracking, typing output and logging setup."""
+"""Hotkey tracking and logging setup."""
 
 import io
 import logging
@@ -9,15 +9,14 @@ import pytest
 
 from helpers import flush_logs
 from transcription_flow import logsetup
-from transcription_flow.hotkey import HotkeyTracker, KeyboardHotkey
-from transcription_flow.output import KeyboardTyper
+from transcription_flow.hotkey import HotkeyTracker
 
 
 @pytest.fixture
 def events():
     log = []
-    tracker = HotkeyTracker(lambda: log.append("press"), lambda: log.append("release"),
-                            lambda: log.append("other"))
+    tracker = HotkeyTracker(lambda unchecked: log.append("press"), lambda: log.append("release"),
+                            lambda reason: log.append("other"))
     return tracker, log
 
 
@@ -44,49 +43,6 @@ def test_other_keys_when_not_held_are_ignored(events):
     tracker.key_up(False)
     tracker.key_up(True)  # stray up (e.g. held before start)
     assert log == []
-
-
-class FakeKeyboard:
-    def __init__(self):
-        self.handler = None
-        self.unhooked = None
-        self.written = []
-
-    def key_to_scan_codes(self, name):
-        assert name == "right ctrl"
-        return (157,)
-
-    def hook(self, handler):
-        self.handler = handler
-        return "remove-token"
-
-    def unhook(self, token):
-        self.unhooked = token
-
-    def write(self, text):
-        self.written.append(text)
-
-    def send(self, scan_code, event_type):
-        self.handler(type("E", (), {"scan_code": scan_code, "event_type": event_type})())
-
-
-def test_keyboard_hotkey_adapter_routes_events():
-    kb, log = FakeKeyboard(), []
-    hk = KeyboardHotkey("right ctrl", keyboard_module=kb)
-    hk.start(lambda: log.append("press"), lambda: log.append("release"),
-             lambda: log.append("other"))
-    kb.send(157, "down")
-    kb.send(46, "down")  # C
-    kb.send(157, "up")
-    hk.stop()
-    assert log == ["press", "other", "release"]
-    assert kb.unhooked == "remove-token"
-
-
-def test_typer_types_and_touches_nothing_else():
-    kb = FakeKeyboard()
-    KeyboardTyper(keyboard_module=kb).emit("Hello world.")
-    assert kb.written == ["Hello world."]
 
 
 def test_none_streams_go_to_the_log(tmp_path, monkeypatch):

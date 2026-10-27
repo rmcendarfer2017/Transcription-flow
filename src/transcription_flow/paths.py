@@ -1,8 +1,9 @@
-"""Where the app keeps its data (models, logs, caches).
+"""Where the app keeps its data (models, logs, caches) and its settings.
 
-Windows: %LOCALAPPDATA%\\TranscriptionFlow (so an uninstaller can remove it).
-Elsewhere: $XDG_DATA_HOME/transcription-flow (dev and CI only).
-TFLOW_HOME overrides both (tests and portable use).
+Data, Windows: %LOCALAPPDATA%\\TranscriptionFlow (so an uninstaller can remove it).
+Settings, Windows: %APPDATA%\\TranscriptionFlow\\config.json.
+Elsewhere: $XDG_DATA_HOME and $XDG_CONFIG_HOME /transcription-flow (dev and CI only).
+TFLOW_HOME overrides all of them with one folder (tests and portable use).
 """
 
 import os
@@ -27,3 +28,14 @@ def models_dir() -> Path:
 
 def logs_dir() -> Path:
     return data_dir() / "logs"
+
+
+def config_file() -> Path:
+    override = os.environ.get("TFLOW_HOME")
+    if override:
+        return Path(override) / "config.json"
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "TranscriptionFlow" / "config.json"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "transcription-flow" / "config.json"

@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 
 MIN_SECONDS = 0.3
 MAX_SECONDS = 300.0
+CAP_DROPPED = ("Recording dropped at the 5-minute limit, not typed: with Filter Keys repeat "
+               "off, the app can't tell if the key was let go.")
 
 
 class State(enum.Enum):
@@ -48,6 +50,7 @@ class Controller:
         self._max_seconds = max_seconds
         self._lock = threading.Lock()
         self._state = State.IDLE
+        self._paused = False
         self._cap_timer = None
         self._recording_id = 0  # the cap timer's token (review F8)
         self._jobs = queue.Queue()
@@ -73,11 +76,15 @@ class Controller:
         self._recorder.close()
 
     # -- hotkey events ---------------------------------------------------
-    def press(self) -> None:
+    def press(self, unchecked: bool = False) -> None:
+        """``unchecked``: a missed key release can't be detected for this
+        hold, so reaching the cap means the release was probably missed
+        (the lock screen, an elevated window) and the recording is dropped,
+        never typed into whatever has focus now."""
         with self._lock:
             if self._state is State.TRANSCRIBING:
                 log.info("press ignored: still transcribing")
-            if self._state is not State.IDLE:
+            if self._state is not State.IDLE or self._paused:
                 return
             try:
                 self._recorder.start()
@@ -86,7 +93,8 @@ class Controller:
                 return
             self._recording_id += 1
             rid = self._recording_id
-            self._cap_timer = self._timer(self._max_seconds, lambda: self._cap_hit(rid))
+            self._cap_timer = self._timer(self._max_seconds,
+                                          lambda: self._cap_hit(rid, unchecked))
             self._set(State.RECORDING)
 
     def release(self) -> None:
@@ -94,19 +102,58 @@ class Controller:
             if self._state is State.RECORDING:
                 self._finish("release")
 
-    def other_key(self) -> None:
-        """Another key went down while the hotkey was held: a shortcut, not dictation."""
+    def cancel(self, reason: str) -> bool:
+        """Drop the recording: another key went down while the hotkey was held
+        (a shortcut, not dictation), or the key-up was missed. True if a
+        recording was dropped."""
         with self._lock:
             if self._cancel():
-                log.info("recording cancelled: another key was pressed")
+                log.info("recording cancelled: %s", reason)
+                return True
+            return False
 
-    def _cap_hit(self, rid: int) -> None:
+    # -- settings (any thread) -------------------------------------------
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        with self._lock:
+            self._paused = paused
+            if paused and self._cancel():
+                log.info("recording cancelled: dictation paused")
+
+    def set_output(self, output) -> None:
+        with self._lock:  # the worker reads it once per clip
+            self._output = output
+
+    def set_keep_warm(self, keep_warm: bool) -> None:
+        """Keep the microphone open between dictations, or not. A change
+        while recording takes effect when that recording ends."""
+        with self._lock:
+            self._recorder.keep_warm = keep_warm
+            if self._state is not State.IDLE:
+                return
+            if keep_warm:
+                try:
+                    self._recorder.open()
+                except MicrophoneError as err:
+                    self._error(err)
+            else:
+                self._recorder.close()
+
+    def _cap_hit(self, rid: int, unchecked: bool) -> None:
         # Timer.cancel() can't stop a callback already waiting for the lock,
         # so a stale cap must not end a newer recording.
         with self._lock:
             if self._state is State.RECORDING and rid == self._recording_id:
                 log.info("recording reached the %.0f s cap", self._max_seconds)
-                self._finish("cap")
+                if unchecked:  # review-m2 R3
+                    self._cancel()
+                    log.info("recording dropped: its key release could not be checked")
+                    self._on_error(CAP_DROPPED)
+                else:
+                    self._finish("cap")
 
     # -- internals (lock held) -------------------------------------------
     def _set(self, state: State) -> None:
@@ -157,7 +204,9 @@ class Controller:
                 text = self._transcriber.transcribe(audio)
                 if text:
                     log.info("transcribed %d characters", len(text))
-                    self._output.emit(text)
+                    with self._lock:
+                        output = self._output
+                    output.emit(text)
                 else:
                     log.info("no speech detected")
             except Exception as err:
