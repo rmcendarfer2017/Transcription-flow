@@ -9,8 +9,17 @@ page shows what to expect and how to check the file first.
 
 ## 1. Check the download (optional, recommended)
 
-Each release lists `SHA256SUMS.txt` next to the installer. In PowerShell, in
-the folder you downloaded to:
+Each release lists `SHA256SUMS.txt` next to the installer. To check the
+installer against it:
+
+1. Open the folder you downloaded to (usually **Downloads**) in File
+   Explorer.
+2. Open PowerShell there: on Windows 11, right-click an empty part of the
+   folder and choose **Open in Terminal**; on Windows 10, hold **Shift**,
+   right-click an empty part of the folder and choose **Open PowerShell
+   window here**. (Or open PowerShell from the Start menu and type
+   `cd $HOME\Downloads`.)
+3. Type this, with your file's version number, and press Enter:
 
 ```
 Get-FileHash .\TranscriptionFlow-Setup-0.1.0.exe

@@ -38,7 +38,7 @@ A setup window opens:
 1. **Microphone check** with a level meter. If it stays flat, Windows may be
    blocking the microphone; the window has a button that opens the Windows
    microphone privacy settings.
-2. **Speech model download** with a progress bar. `small.en` (about 490 MB)
+2. **Speech model download** with a progress bar. `small.en` (about 486 MB)
    is recommended; `tiny.en` and `base.en` are smaller and faster but less
    accurate. If the download fails, the window offers **Retry**,
    **Use a smaller model** and **Open model folder** (you can copy the
@@ -181,8 +181,8 @@ checks only that the model's files are there at the right sizes; run
   administrator is not the fix. Some apps drop typed keys: try **Paste**
   as the output in Settings.
 - **"Microphone blocked" or a flat level meter.** Open Windows Settings >
-  Privacy & security > Microphone and allow desktop apps to use it, or pick
-  another microphone in Settings.
+  Privacy & security > Microphone (on Windows 10: Privacy > Microphone) and
+  allow desktop apps to use it, or pick another microphone in Settings.
 - **Your antivirus warns about it.** The build is new and unsigned, and a
   hotkey-and-typing app looks like a keylogger to some scanners. See
   [docs/smartscreen.md](docs/smartscreen.md#if-your-antivirus-complains).
@@ -196,7 +196,7 @@ checks only that the model's files are there at the right sizes; run
 ## Uninstall
 
 Windows Settings > Apps > Installed apps > **Transcription Flow** >
-Uninstall. It removes the app, its Start menu entry and its "Start with
+Uninstall (on Windows 10: Settings > Apps > Apps & features). It removes the app, its Start menu entry and its "Start with
 Windows" entry, then asks whether to also delete your downloaded speech
 models and settings (`%LOCALAPPDATA%\TranscriptionFlow` and
 `%APPDATA%\TranscriptionFlow`; the default is No, which keeps them for a
@@ -297,8 +297,14 @@ it yourself on Windows (Inno Setup 6 installed):
 ```
 venv\Scripts\pip install --require-hashes --no-deps -r requirements-build-lock.txt
 venv\Scripts\python -m PyInstaller --noconfirm --clean packaging\transcription_flow.spec
-"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DSourceDir=%CD%\dist\TranscriptionFlow /DOutputDir=%CD%\dist\out packaging\installer.iss
+for /f %v in ('venv\Scripts\python packaging\buildinfo.py version') do set TF_VERSION=%v
+for /f %v in ('venv\Scripts\python packaging\buildinfo.py numeric-version') do set TF_NUM=%v
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=%TF_VERSION% /DAppNumVersion=%TF_NUM% /DSourceDir=%CD%\dist\TranscriptionFlow /DOutputDir=%CD%\dist\out /DIconFile=%CD%\build\transcription_flow\TranscriptionFlow.ico packaging\installer.iss
 ```
+
+(These are `cmd.exe` lines; in a `.bat` file write `%%v` for `%v`. CI's
+PowerShell version is in
+[`windows-build.yml`](.github/workflows/windows-build.yml).)
 
 `dist\TranscriptionFlow\` is the app folder (the portable zip is that
 folder plus `Uninstall portable.txt`); `dist\out\` holds the installer.
@@ -309,17 +315,29 @@ per-user (no admin prompt) and unsigned for now.
 
 1. Set the date of the version's section in `CHANGELOG.md`
    (`## [0.1.0] - YYYY-MM-DD`) and merge that to `main`.
-2. Tag the merged commit on `main` and push the tag:
+2. Wait until CI on `main` has passed for that commit. The release stops
+   if CI is missing, still running or failed for the tagged commit; after
+   CI finishes, re-run the failed release jobs from the Actions tab.
+3. Tag the merged commit on `main` and push the tag:
    `git tag v0.1.0 && git push origin v0.1.0`.
-3. [`release.yml`](.github/workflows/release.yml) checks that the tag
-   matches the version in `src/transcription_flow/__init__.py` (a `v0.1.0`
-   tag builds `0.1.0` from a `0.1.0.dev0` source) and that the changelog
-   section is dated, runs the same Windows build and checks as CI, and
-   creates a **draft** release with the installer, the portable zip,
-   `SHA256SUMS.txt` and the changelog section as notes.
-4. Check the draft (download, checksum, test install), then publish it by
+4. [`release.yml`](.github/workflows/release.yml) checks that the tag is
+   exactly the version `src/transcription_flow/__init__.py` is working
+   towards (a `0.1.0.dev0` source takes only `v0.1.0`), that the changelog
+   section is dated and that CI passed, runs the same Windows build and
+   checks as CI, and creates a **draft** release with the installer, the
+   portable zip, `SHA256SUMS.txt` and the changelog section as notes.
+5. Check the draft (download, checksum, test install), then publish it by
    hand. The workflow never publishes. After a release, set `__version__`
    to the next `.dev0` version.
+
+A pre-release (`v0.1.0rc1`, `a1`, `b1`) is drafted as a GitHub
+pre-release, so it never becomes the "latest" release that the Download
+link serves. It needs its own version and changelog section: set
+`__version__ = "0.1.0rc1.dev0"` and add a dated `## [0.1.0rc1] - YYYY-MM-DD`
+section (the `0.1.0` section does not count) before tagging, then go back
+to `0.1.0.dev0` afterwards. Links in a changelog section must be absolute
+(`https://github.com/...`): the section becomes the release notes, where
+relative links break.
 
 ## Third-party licences
 

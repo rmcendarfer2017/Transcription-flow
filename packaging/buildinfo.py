@@ -7,6 +7,7 @@ CI workflow and the static tests (tests/test_packaging.py).
     python packaging/buildinfo.py check-tag v0.1.0   -> 0.1.0 (exit 1 unless it is the source's release)
     python packaging/buildinfo.py stamp-version v0.1.0  (release builds: __version__ = "0.1.0")
     python packaging/buildinfo.py release-notes 0.1.0   -> that version's CHANGELOG.md section
+    python packaging/buildinfo.py check-ci RUNS.json -> exit 1 unless ci.yml passed (release.yml)
     python packaging/buildinfo.py check-onedir DIR   -> exit 1 with the problems found
     python packaging/buildinfo.py portable-zip DIR OUT.zip
 
@@ -14,7 +15,9 @@ Pure standard library at import time; Pillow is needed only for write_icon.
 """
 
 import argparse
+import datetime
 import importlib.metadata as metadata
+import json
 import re
 import shutil
 import sys
@@ -66,14 +69,26 @@ _SKIP_SUFFIXES = {".py", ".pyc", ".pyi"}
 def app_version(root: Path = ROOT) -> str:
     """__version__ from the package source (not imported: that would apply
     the runtime environment to the build process)."""
-    text = (root / "src" / "transcription_flow" / "__init__.py").read_text("utf-8")
-    return re.search(r'^__version__ = "([^"]+)"', text, re.M).group(1)
+    init = root / "src" / "transcription_flow" / "__init__.py"
+    try:
+        text = init.read_text("utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise SystemExit(f"cannot read {init}: {e}") from None
+    match = re.search(r'^__version__ = "([^"]+)"', text, re.M)
+    if not match:
+        raise SystemExit(f'{init} has no __version__ = "..." line')
+    return match.group(1)
 
 
 # Release tags: v1.2.3, or a pre-release such as v1.2.3rc1 (PEP 440 spelling,
-# so the tag is the version the app reports).
-_TAG = re.compile(r"v(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)")
+# so the tag is the version the app reports). ASCII digits only, no leading
+# zeros (PEP 440 would normalise v01.0.0 to 1.0.0, so the file names would
+# not match the version).
+_NUM = r"(?:0|[1-9][0-9]*)"
+_TAG = re.compile(rf"v({_NUM}\.{_NUM}\.{_NUM}(?:(?:a|b|rc){_NUM})?)")
+_DEV_SUFFIX = re.compile(r"\.dev[0-9]+$")
 _VERSION_LINE = re.compile(r'^__version__ = "[^"]+"$', re.M)
+_DATE = re.compile(r" - ([0-9]{4}-[0-9]{2}-[0-9]{2})")
 
 
 def tag_version(tag: str) -> str:
@@ -84,18 +99,20 @@ def tag_version(tag: str) -> str:
     return match.group(1)
 
 
-def release_part(version: str) -> str:
-    """'0.1.0.dev0' -> '0.1.0'; '0.1.0rc1' -> '0.1.0'."""
-    return re.match(r"\d+\.\d+\.\d+", version).group(0)
+def target_version(source: str) -> str:
+    """The release a source version is working towards: '0.1.0.dev0' ->
+    '0.1.0', '0.2.0rc1.dev0' -> '0.2.0rc1', '0.1.0' -> '0.1.0'."""
+    return _DEV_SUFFIX.sub("", source)
 
 
 def check_tag(tag: str, root: Path = ROOT) -> str:
-    """The tag's version, if the tag is a release of the version the source
-    is working towards: tagging v0.2.0 on a 0.1.0.dev0 tree stops (bump
-    __init__.py first). Changes nothing."""
+    """The tag's version, if it is exactly the release the source is working
+    towards, pre-release part included: a 0.1.0.dev0 tree takes only v0.1.0,
+    and v0.1.0rc1 needs __version__ = "0.1.0rc1.dev0" (or "0.1.0rc1") first.
+    Changes nothing."""
     version = tag_version(tag)
     source = app_version(root)
-    if release_part(source) != release_part(version):
+    if target_version(source) != version:
         raise SystemExit(f"tag {tag} does not match the source version {source}; "
                          "set __version__ in src/transcription_flow/__init__.py first")
     return version
@@ -114,14 +131,27 @@ def stamp_version(tag: str, root: Path = ROOT) -> str:
 
 def release_notes(version: str, changelog: Path = ROOT / "CHANGELOG.md") -> str:
     """The body of the '## [version] - YYYY-MM-DD' section of the changelog.
-    A missing, undated ('Unreleased') or empty section stops the release."""
-    text = changelog.read_text("utf-8")
-    heading = re.search(rf"^## \[{re.escape(version)}\](.*)$", text, re.M)
-    if not heading:
+    A missing, duplicated, undated ('Unreleased') or empty section stops the
+    release."""
+    try:
+        text = changelog.read_text("utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise SystemExit(f"cannot read {changelog.name}: {e}") from None
+    headings = list(re.finditer(rf"^## \[{re.escape(version)}\](.*)$", text, re.M))
+    if not headings:
         raise SystemExit(f"CHANGELOG.md has no '## [{version}]' section")
-    if not re.fullmatch(r" - \d{4}-\d{2}-\d{2}", heading.group(1).rstrip()):
+    if len(headings) > 1:
+        raise SystemExit(f"CHANGELOG.md has {len(headings)} '## [{version}]' sections; keep one")
+    heading = headings[0]
+    date = _DATE.fullmatch(heading.group(1).rstrip())
+    if not date:
         raise SystemExit(f"CHANGELOG.md: give '## [{version}]' its release date "
                          f"('## [{version}] - YYYY-MM-DD') before tagging")
+    try:
+        datetime.date.fromisoformat(date.group(1))
+    except ValueError:
+        raise SystemExit(f"CHANGELOG.md: '{date.group(1)}' in '## [{version}]' "
+                         "is not a real date (YYYY-MM-DD)") from None
     rest = text[heading.end():]
     end = re.search(r"^## |^\[[^\]]+\]: ", rest, re.M)
     body = rest[:end.start() if end else None].strip()
@@ -130,9 +160,47 @@ def release_notes(version: str, changelog: Path = ROOT / "CHANGELOG.md") -> str:
     return body + "\n"
 
 
+# The check runs ci.yml makes for a commit: its job names, and for the job
+# that calls windows-build.yml, "<caller job name> / <called job name>".
+# A test derives these from the workflow files.
+CI_CHECKS = ("Linux tests (with a real tiny.en transcription)", "Windows unit tests",
+             "Windows build / Windows build, install and uninstall")
+
+
+def ci_problems(check_runs: dict) -> list:
+    """Why ci.yml has not passed on a commit, from GitHub's check-runs list
+    (GET repos/O/R/commits/SHA/check-runs). Empty when every CI check ran
+    and succeeded; anything missing, still running or unreadable is a
+    problem (fail closed)."""
+    runs = check_runs.get("check_runs") if isinstance(check_runs, dict) else None
+    if not isinstance(runs, list):
+        return ["the check-runs reply has no check_runs list"]
+    if check_runs.get("total_count") != len(runs):
+        return [f"got {len(runs)} of {check_runs.get('total_count')} check runs; "
+                "the list is incomplete"]
+    problems = []
+    for name in CI_CHECKS:
+        found = [r for r in runs if isinstance(r, dict) and r.get("name") == name
+                 and (r.get("app") or {}).get("slug") == "github-actions"]
+        if not found:
+            problems.append(f"no '{name}' check on this commit")
+        for run in found:
+            if (run.get("status"), run.get("conclusion")) != ("completed", "success"):
+                problems.append(f"'{name}' is {run.get('status')}/{run.get('conclusion')}")
+    return problems
+
+
+def check_ci(path: Path) -> list:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        return [f"cannot read {path}: {e}"]
+    return ci_problems(data)
+
+
 def numeric_version(version: str) -> str:
     """'0.1.0.dev0' -> '0.1.0.0': Windows version fields are four numbers."""
-    release = re.match(r"\d+(?:\.\d+)*", version).group(0).split(".")[:3]
+    release = re.match(r"[0-9]+(?:\.[0-9]+)*", version).group(0).split(".")[:3]
     return ".".join((release + ["0"] * 4)[:4])
 
 
@@ -335,6 +403,7 @@ def main(argv=None) -> int:
     for name in ("tag-version", "check-tag", "stamp-version"):
         sub.add_parser(name).add_argument("tag")
     sub.add_parser("release-notes").add_argument("version")
+    sub.add_parser("check-ci").add_argument("check_runs_json", type=Path)
     c = sub.add_parser("check-onedir")
     c.add_argument("onedir", type=Path)
     z = sub.add_parser("portable-zip")
@@ -353,6 +422,13 @@ def main(argv=None) -> int:
         print(stamp_version(args.tag))
     elif args.cmd == "release-notes":
         sys.stdout.write(release_notes(args.version))
+    elif args.cmd == "check-ci":
+        problems = check_ci(args.check_runs_json)
+        for problem in problems:
+            print(f"FAIL: {problem}")
+        if problems:
+            return 1
+        print("CI passed on this commit")
     elif args.cmd == "check-onedir":
         problems = check_onedir(args.onedir)
         for problem in problems:

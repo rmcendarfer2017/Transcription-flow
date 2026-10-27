@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Windows build, install and uninstall (artifacts only, no release)
+    name: Windows build, install and uninstall
     runs-on: windows-latest
     timeout-minutes: 45
     steps:

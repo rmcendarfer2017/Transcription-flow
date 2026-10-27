@@ -73,7 +73,8 @@ runs on the CPU and is not code-signed yet.
 - CPU only (no GPU build yet). On an older laptop, `base.en` or `tiny.en`
   is faster than `small.en`.
 - Not code-signed: Windows SmartScreen shows "Windows protected your PC"
-  the first time (see [docs/smartscreen.md](docs/smartscreen.md)).
+  the first time (see
+  [the SmartScreen guide](https://github.com/rmcendarfer2017/Transcription-flow/blob/main/docs/smartscreen.md)).
 - Windows does not let normal apps type into windows that run as
   administrator, so dictation cannot type there.
 - Settings offers English models only (tiny.en, base.en, small.en).
