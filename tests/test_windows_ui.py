@@ -4,15 +4,20 @@ These build the real widgets, so a typo in the Tk code fails CI rather than
 the first time someone opens Settings.
 
 One Tk root per process, as in the app (main.py builds one Overlay; Settings
-and the setup window are Toplevels of its root). On windows-latest a second
-Tk() in one pytest process intermittently failed to read Tcl's own library
-files ("Can't find a usable init.tcl ... couldn't read file .../init.tcl: No
-error", or "Can't find a usable tk.tcl ... ttk/entry.tcl: no such file or
-directory"): 4 of 17 windows-unit runs (27-28 Oct 2026), every time on a
-second or later Tk() and never on the first, including in a pytest process
-that ran only this file (PR #4 727db3c and 5c29e35: the module root was the
-first Tk, the Overlay's tk.Tk() the second). So the tests build the Overlay
-once and use its root for every window, and a second Tk() fails at once.
+and the setup window are Toplevels of its root). On windows-latest, Tk()
+intermittently failed to read Tcl's own library files ("Can't find a usable
+init.tcl ... couldn't read file .../init.tcl: No error", or "Can't find a
+usable tk.tcl ... ttk/entry.tcl: no such file or directory"): 4 of the 14
+windows-unit runs that ran the Tk tests (27-28 Oct 2026). Every failure was
+on a second or later Tk() in the process, never the first, including in a
+pytest process that ran only this file (PR #4 727db3c and 5c29e35: the module
+root was the first Tk, the Overlay's tk.Tk() the second). That is consistent
+with "a second Tk() in one process" as the trigger, but not proven: every
+failing Tk() also came after display.enable_dpi_awareness() (ctypes loads
+shcore.dll and sets the process DPI awareness) in the same process, and this
+fixture still makes that call before its Tk(). So the tests build the
+Overlay once and use its root for every window, and a second Tk() fails at
+once.
 """
 
 import sys
@@ -93,8 +98,9 @@ def test_overlay_builds_scaled_and_runs_posted_calls(overlay):
         assert ran == [True] and overlay._state == "recording"
         assert overlay.root.winfo_width() >= 1 and overlay.scale >= 1.0
     finally:
-        overlay.post("hidden")  # the root stays up for the other tests
-        overlay._tick()
+        # The root stays up for the other tests. The _tick() above scheduled
+        # one more after() chain on it; _show() hides without adding another.
+        overlay._show("hidden")
 
 
 def test_a_second_tk_root_is_refused(overlay):
