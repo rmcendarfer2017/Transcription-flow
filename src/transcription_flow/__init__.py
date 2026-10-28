@@ -6,5 +6,5 @@ from . import _env
 # huggingface_hub can be imported by any route (review M4).
 _env.apply()
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0rc1.dev0"
 REPO_URL = "https://github.com/rmcendarfer2017/Transcription-flow"
