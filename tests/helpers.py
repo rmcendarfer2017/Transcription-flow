@@ -1,5 +1,6 @@
 """Test fakes and helpers (no real audio devices, hotkeys or network)."""
 
+import inspect
 import logging
 import os
 import time
@@ -21,6 +22,33 @@ def child_env(drop=(), **extra):
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(SRC_DIR), extra.get("PYTHONPATH")) if p)
     return env
+
+
+class FakeMenuItem:
+    """pystray.MenuItem with the checks pystray 0.19.5 makes in __init__
+    (_base.py MenuItem._assert_action and _assert_callable): an action may
+    take at most two positional parameters, defaults counted, and checked
+    must be None or callable. The M4 build crashed at start on the first."""
+
+    def __init__(self, text, action, checked=None, enabled=True, default=False):
+        if action is not None and hasattr(action, "__code__"):
+            argcount = action.__code__.co_argcount - (1 if inspect.ismethod(action) else 0)
+            if argcount > 2:
+                raise ValueError(action)
+        if checked is not None and not callable(checked):
+            raise ValueError(checked)
+        self.text, self.action, self.checked, self.enabled, self.default = (
+            text, action, checked, enabled, default)
+
+
+class FakeMenu:
+    SEPARATOR = FakeMenuItem("----", None)  # pystray's is a MenuItem too
+
+    def __init__(self, *items):
+        self.items = items
+
+    def __iter__(self):
+        return iter(self.items)
 
 
 class PortAudioError(Exception):

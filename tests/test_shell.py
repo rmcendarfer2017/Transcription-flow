@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from helpers import FakeMenu, FakeMenuItem
 from transcription_flow import app as app_mod
 from transcription_flow import config, models
 from transcription_flow.app import App
@@ -108,19 +109,6 @@ def test_work_area_failure_gives_none():
 
 # -- tray -----------------------------------------------------------------------
 
-class FakeMenuItem:
-    def __init__(self, text, action, checked=None, enabled=True, default=False):
-        self.text, self.action, self.checked, self.enabled, self.default = (
-            text, action, checked, enabled, default)
-
-
-class FakeMenu:
-    SEPARATOR = "----"
-
-    def __init__(self, *items):
-        self.items = items
-
-
 class FakeIcon:
     HAS_NOTIFICATION = True
 
@@ -144,18 +132,21 @@ class FakePystray:
     Menu, MenuItem, Icon = FakeMenu, FakeMenuItem, FakeIcon
 
 
+def recording_actions(calls):
+    return TrayActions(*(lambda n=n: calls.append(n) for n in
+                         ("pause", "settings", "logs", "quit")))
+
+
 @pytest.fixture
 def tray():
     calls = []
-    actions = TrayActions(*(lambda n=n: calls.append(n) for n in
-                            ("pause", "settings", "logs", "quit")))
-    t = Tray(actions, pystray_module=FakePystray())
+    t = Tray(recording_actions(calls), pystray_module=FakePystray())
     t.start()
     return t, calls
 
 
 def labels(menu):
-    return [i if i == FakeMenu.SEPARATOR else i.text for i in menu.items]
+    return [i.text for i in menu.items]
 
 
 def test_tray_menu_order_and_status_line(tray):
@@ -170,15 +161,46 @@ def test_tray_menu_order_and_status_line(tray):
 
 def test_tray_items_call_their_actions_and_settings_is_the_default(tray):
     t, calls = tray
-    items = [i for i in t._icon.menu.items if i != FakeMenu.SEPARATOR and i.action]
+    items = [i for i in t._icon.menu.items if i.action]
     for item in items:
         item.action(t._icon, item)
     assert calls == ["pause", "settings", "logs", "quit"]
     assert [i.text for i in items if i.default] == ["Settings…"]
 
 
+def test_the_stand_in_menu_item_refuses_what_pystray_refuses():
+    """The M4 crash: a default argument made the action take three parameters."""
+    with pytest.raises(ValueError):
+        FakeMenuItem("Quit", lambda icon, item, cb=print: cb())
+    with pytest.raises(ValueError):
+        FakeMenuItem("Pause", lambda icon, item: None, checked=True)
+    FakeMenuItem("Quit", lambda icon, item: None, checked=lambda item: True)
+
+
+def test_tray_menu_builds_with_the_real_pystray():
+    """Where pystray is installed (Windows CI, Ryan's PC) build the menu with
+    the real MenuItem checks, click every item and read the check mark."""
+    pystray = pytest.importorskip("pystray")
+    calls = []
+    t = Tray(recording_actions(calls), pystray_module=pystray)
+    assert [i.checked for i in t._menu()] == [None, None, False, None, None, None, None]
+    t.paused = True
+    items = list(t._menu())
+    for item in items:
+        if item.enabled and item is not pystray.Menu.SEPARATOR:
+            item(None)  # what pystray does on a click
+    assert calls == ["pause", "settings", "logs", "quit"]
+    assert [i.checked for i in items] == [None, None, True, None, None, None, None]
+
+
+def check_marks(menu):
+    return [i.checked(i) if i.checked else None for i in menu.items]
+
+
 def test_tray_status_change_updates_tooltip_menu_and_pause_check(tray):
     t, calls = tray
+    # Running: Pause is a check box, unticked; nothing else is checkable.
+    assert check_marks(t._icon.menu) == [None, None, False, None, None, None, None]
     t.set_status("Paused", paused=True)
     icon = t._icon
     assert icon.title == "Transcription Flow: Paused"
@@ -925,3 +947,23 @@ def test_quit_stops_hotkey_tray_settings_and_the_ui(shell):
     a.quit()
     assert a.quitting and p["hk"].calls[-1] == "stop" and p["tray"].stopped
     assert p["stopped"] == [True] and a._settings is None
+
+
+def test_a_second_launch_opens_settings_or_lifts_the_open_window(shell):
+    a, p = shell
+    a.show_window()
+    a.show_window()
+    assert len(p["windows"]) == 1 and p["windows"][0].lifted == 1 and p["wizards"] == []
+
+
+def test_a_second_launch_lifts_an_open_setup_window_even_with_a_model(shell):
+    a, p = shell
+    a.open_wizard()
+    a.show_window()
+    assert p["wizards"][0].lifted == 1 and p["windows"] == []
+
+
+def test_a_second_launch_with_no_model_opens_the_setup_window(first_run):
+    a, p = first_run
+    a.show_window()
+    assert len(p["wizards"]) == 1 and p["windows"] == []

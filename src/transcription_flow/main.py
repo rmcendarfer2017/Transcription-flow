@@ -46,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--reset-config", action="store_true",
                    help="put every setting back to its default, then exit")
     p.add_argument("--probe-gpu", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--check-bundle", action="store_true", help=argparse.SUPPRESS)
     return p
 
 
@@ -115,12 +116,17 @@ def run_app(args, models_dir: Path) -> int:
     try:
         guard = single_instance.acquire(paths.data_dir())
     except single_instance.AlreadyRunning:
-        if sys.stderr is not None:
-            print("[!] Transcription Flow is already running; this copy will exit.",
-                  file=sys.stderr)
-        return EXIT_ALREADY_RUNNING
+        return _already_running(args)
+    show = None
     try:
         log_file = logsetup.setup(paths.logs_dir())
+        if not _command_only(args):
+            # Before the settings load, so a double-click during startup is
+            # kept until the window can open (review-m4 F8).
+            try:
+                show = single_instance.ShowListener(paths.data_dir())
+            except OSError as err:  # a second launch then just exits; dictation still works
+                log.warning("second-launch listener not started (%s)", type(err).__name__)
         if args.reset_config:
             config.save(config.Config(), paths.config_file())
             print(f"Settings reset: {paths.config_file()}")
@@ -136,9 +142,33 @@ def run_app(args, models_dir: Path) -> int:
                 return EXIT_SETUP
             print(folder)
             return EXIT_OK
-        return _run_dictation(args, settings, models_dir, log_file)
+        return _run_dictation(args, settings, models_dir, log_file, show)
     finally:
+        if show is not None:
+            show.close()
         guard.release()
+
+
+def _command_only(args) -> bool:
+    """A run that does one job and exits, without the dictation app."""
+    return args.reset_config or args.download_model or args.verify
+
+
+def _already_running(args) -> int:
+    """A copy started by hand (not a sign-in start or a one-off command) asks
+    the running one to open its window, so a double-click always shows
+    something (review-m3 deviation 3)."""
+    from . import paths, single_instance
+
+    one_off = args.tray or _command_only(args)
+    if not one_off and single_instance.request_show(paths.data_dir()):
+        if sys.stderr is not None:
+            print("Transcription Flow is already running; its window is open.", file=sys.stderr)
+        return EXIT_OK
+    if sys.stderr is not None:
+        print("[!] Transcription Flow is already running; this copy will exit.",
+              file=sys.stderr)
+    return EXIT_ALREADY_RUNNING
 
 
 def _first_model(args, settings, service):
@@ -159,7 +189,7 @@ def _first_model(args, settings, service):
     return name, config.language_for(name, settings.language), service.folder / name
 
 
-def _run_dictation(args, settings, models_dir, log_file) -> int:
+def _run_dictation(args, settings, models_dir, log_file, show=None) -> int:
     from . import autostart, gpu_probe, paths
     from .app import App
     from .controller import Controller
@@ -243,6 +273,8 @@ def _run_dictation(args, settings, models_dir, log_file) -> int:
         return EXIT_SETUP
     for message in startup_errors:
         app.report_error(message)
+    if show is not None:  # a later launch of the app opens Settings or the setup window
+        show.connect(lambda: overlay.call(app.show_window))
     log.info("ready on %s with %s", service.device, name or "no model yet")
     if sys.stderr is not None and name is not None:
         print(f"Ready. Hold {app.hotkey_label()} to dictate, release to type the text. "
@@ -270,6 +302,10 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
+    if args.check_bundle:
+        from . import bundlecheck
+
+        return bundlecheck.main()
     from . import models, paths
 
     models_dir = args.models_dir or paths.models_dir()

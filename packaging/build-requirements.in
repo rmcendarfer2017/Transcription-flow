@@ -1,0 +1,4 @@
+# PyInstaller for the Windows build (packaging/transcription_flow.spec).
+# Lock: uv pip compile pyproject.toml packaging/build-requirements.in -c requirements-lock.txt
+#       --universal --generate-hashes -o requirements-build-lock.txt
+pyinstaller==6.22.3

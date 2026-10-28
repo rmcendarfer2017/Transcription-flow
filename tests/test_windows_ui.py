@@ -2,6 +2,17 @@
 
 These build the real widgets, so a typo in the Tk code fails CI rather than
 the first time someone opens Settings.
+
+CI runs this file in a pytest process of its own (.github/workflows/ci.yml,
+windows-unit). On windows-latest, Tk() intermittently failed with "Can't
+find a usable init.tcl ... couldn't read file .../init.tcl: No error" (2 of
+3 runs of PR #3, a different test each time, always after ~495 other tests
+in the same process, never in a test's first Tk). Tcl found the right file
+and failed to read it with errno 0, which points at process state left by
+earlier tests (threads, DLLs, handles), not at the Tk code or the install.
+The root cause is not proven without a Windows box to bisect on; a fresh
+process removes every such input, and if it ever fails there too, that
+rules the other tests out.
 """
 
 import sys

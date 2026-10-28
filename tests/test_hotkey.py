@@ -483,7 +483,8 @@ def gap(**kw):
 
 
 class DesktopUser32:
-    def __init__(self, open_handle=7, switch=1, fail=False, error=hk.ERROR_ACCESS_DENIED):
+    # error=5: the literal ERROR_ACCESS_DENIED, so a wrong constant in hotkey.py fails (X1)
+    def __init__(self, open_handle=7, switch=1, fail=False, error=5):
         self.open_handle, self.switch, self.fail = open_handle, switch, fail
         self.error = error  # GetLastError after a failed OpenInputDesktop
         self.calls = []
