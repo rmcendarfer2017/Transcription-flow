@@ -537,11 +537,11 @@ def test_the_windows_build_job_builds_installs_uninstalls_and_uploads():
     assert "gh release" not in str(job) and "permissions" not in job
 
 
-def test_the_tk_window_tests_run_in_their_own_process_on_windows():
+def test_the_windows_unit_job_runs_the_tk_window_tests():
+    """They hold one Tk root per process themselves (tests/test_windows_ui.py)."""
     steps = workflows()["ci.yml"]["jobs"]["windows-unit"]["steps"]
     runs = [s.get("run", "") for s in steps if "pytest" in s.get("run", "")]
-    assert any("--ignore=tests/test_windows_ui.py" in r for r in runs)
-    assert any(r.endswith("pytest -ra tests/test_windows_ui.py") for r in runs)
+    assert runs == ['python -m pytest -ra -m "not slow"']
 
 
 # -- CI smoke helpers -------------------------------------------------------------------

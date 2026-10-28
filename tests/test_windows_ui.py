@@ -3,16 +3,16 @@
 These build the real widgets, so a typo in the Tk code fails CI rather than
 the first time someone opens Settings.
 
-CI runs this file in a pytest process of its own (.github/workflows/ci.yml,
-windows-unit). On windows-latest, Tk() intermittently failed with "Can't
-find a usable init.tcl ... couldn't read file .../init.tcl: No error" (2 of
-3 runs of PR #3, a different test each time, always after ~495 other tests
-in the same process, never in a test's first Tk). Tcl found the right file
-and failed to read it with errno 0, which points at process state left by
-earlier tests (threads, DLLs, handles), not at the Tk code or the install.
-The root cause is not proven without a Windows box to bisect on; a fresh
-process removes every such input, and if it ever fails there too, that
-rules the other tests out.
+One Tk root per process, as in the app (main.py builds one Overlay; Settings
+and the setup window are Toplevels of its root). On windows-latest a second
+Tk() in one pytest process intermittently failed to read Tcl's own library
+files ("Can't find a usable init.tcl ... couldn't read file .../init.tcl: No
+error", or "Can't find a usable tk.tcl ... ttk/entry.tcl: no such file or
+directory"): 4 of 17 windows-unit runs (27-28 Oct 2026), every time on a
+second or later Tk() and never on the first, including in a pytest process
+that ran only this file (PR #4 727db3c and 5c29e35: the module root was the
+first Tk, the Overlay's tk.Tk() the second). So the tests build the Overlay
+once and use its root for every window, and a second Tk() fails at once.
 """
 
 import sys
@@ -23,23 +23,35 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Tk UI runs on W
 
 
 @pytest.fixture(scope="module")
-def _tk():
-    # One Tk per module: on windows-latest, creating many Tk() in one process
-    # sometimes fails with "Can't find a usable init.tcl ... No error".
-    import tkinter as tk
+def overlay():
+    """The app's one Tk root, built the way main.py builds it."""
+    import tkinter
 
-    r = tk.Tk()
-    r.withdraw()
-    yield r
-    r.destroy()
+    from transcription_flow.ui import display
+    from transcription_flow.ui.overlay import Overlay
+
+    display.enable_dpi_awareness()
+    built = Overlay(lambda: [0.5] * 6)
+
+    def second_root(*args, **kwargs):
+        raise AssertionError("a second tk.Tk() in this process: use the overlay's root "
+                             "(see the module docstring)")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tkinter, "Tk", second_root)
+        yield built
+    built.root.destroy()
 
 
 @pytest.fixture
-def root(_tk):
-    yield _tk
-    for child in list(_tk.winfo_children()):
-        child.destroy()
-    _tk.update()
+def root(overlay):
+    """The overlay's root; windows a test opens on it are closed after it."""
+    own = set(overlay.root.winfo_children())  # the pill's canvas stays
+    yield overlay.root
+    for child in overlay.root.winfo_children():
+        if child not in own:
+            child.destroy()
+    overlay.root.update()
 
 
 def test_settings_window_round_trip(root):
@@ -71,12 +83,7 @@ def test_settings_window_without_autostart_disables_the_box(root):
     win.close()
 
 
-def test_overlay_builds_scaled_and_runs_posted_calls():
-    from transcription_flow.ui import display
-    from transcription_flow.ui.overlay import Overlay
-
-    display.enable_dpi_awareness()
-    overlay = Overlay(lambda: [0.5] * 6)
+def test_overlay_builds_scaled_and_runs_posted_calls(overlay):
     try:
         ran = []
         overlay.post("recording")
@@ -86,7 +93,15 @@ def test_overlay_builds_scaled_and_runs_posted_calls():
         assert ran == [True] and overlay._state == "recording"
         assert overlay.root.winfo_width() >= 1 and overlay.scale >= 1.0
     finally:
-        overlay.root.destroy()
+        overlay.post("hidden")  # the root stays up for the other tests
+        overlay._tick()
+
+
+def test_a_second_tk_root_is_refused(overlay):
+    import tkinter
+
+    with pytest.raises(AssertionError, match="second tk.Tk"):
+        tkinter.Tk()
 
 
 class FakeMeter:
