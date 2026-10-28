@@ -281,10 +281,9 @@ venv\Scripts\python -m pytest
 ```
 
 Tests that need Windows (the real clipboard, registry and Tk windows) skip
-elsewhere and run in the windows-latest CI job. CI runs
-`tests\test_windows_ui.py` in a pytest process of its own (see the note
-at its top); do the same if a Tk test fails with "Can't find a usable
-init.tcl". The two https-redirect
+elsewhere and run in the windows-latest CI job. The Tk tests share one
+Tk root per process, as the app does (see the note at the top of
+`tests\test_windows_ui.py`). The two https-redirect
 tests skip when `openssl` is not on PATH (it makes their test certificate).
 
 The test clip was made with the Kokoro text-to-speech model (Apache-2.0).

@@ -58,13 +58,11 @@ jobs:
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install pinned dependencies
         run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-dev-lock.txt"
-      # The Tk window tests get their own process: on windows-latest, Tk()
-      # after the ~500 other tests intermittently failed with "Can't find a
-      # usable init.tcl ... No error" (M3, PR #3). See tests/test_windows_ui.py.
-      - name: Unit tests (all but the Tk windows)
-        run: python -m pytest -ra -m "not slow" --ignore=tests/test_windows_ui.py
-      - name: Tk window tests, in their own process
-        run: python -m pytest -ra tests/test_windows_ui.py
+      # The Tk window tests build one Tk root per process, as the app does: a
+      # second Tk() intermittently failed to read Tcl's own init.tcl/tk.tcl
+      # here. See tests/test_windows_ui.py.
+      - name: Unit tests
+        run: python -m pytest -ra -m "not slow"
 
   windows-build:
     name: Windows build
