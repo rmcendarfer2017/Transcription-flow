@@ -4,9 +4,12 @@ in the windows-build CI job; these catch drift between the packaging and the
 app (mutex name, Run value, data folders) on any OS."""
 
 import ast
+import functools
 import importlib.util
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -468,8 +471,20 @@ def test_uninstall_removes_autostart_and_asks_about_the_apps_data_folders(monkey
 # -- CI workflows ---------------------------------------------------------------------
 
 
+@functools.cache
 def workflows():
+    """Parsed once per session; the tests only read it."""
     return {p.name: yaml.safe_load(p.read_text("utf-8")) for p in WORKFLOWS}
+
+
+def windows_build_job():
+    """The one Windows build, shared by ci.yml and release.yml."""
+    return workflows()["windows-build.yml"]["jobs"]["build"]
+
+
+# A job either runs on a GitHub-hosted runner or calls this repo's own
+# reusable workflow (which is checked as a workflow of its own).
+LOCAL_BUILD = "./.github/workflows/windows-build.yml"
 
 
 def test_every_workflow_parses_and_runs_on_github_hosted_runners_only():
@@ -477,20 +492,35 @@ def test_every_workflow_parses_and_runs_on_github_hosted_runners_only():
     for name, flow in workflows().items():
         assert flow["permissions"] == {"contents": "read"}, name
         for job_name, job in flow["jobs"].items():
-            assert job["runs-on"] in ("ubuntu-latest", "windows-latest"), (name, job_name)
+            if "uses" in job:
+                assert job["uses"] == LOCAL_BUILD and "runs-on" not in job, (name, job_name)
+            else:
+                assert job["runs-on"] in ("ubuntu-latest", "windows-latest"), (name, job_name)
             assert "self-hosted" not in str(job)
+
+
+def test_both_ci_and_release_use_the_one_windows_build():
+    flows = workflows()
+    on = flows["windows-build.yml"][True]  # yaml reads the key `on` as True
+    (trigger,) = on
+    inputs = on["workflow_call"]["inputs"]
+    assert trigger == "workflow_call" and list(inputs) == ["release-tag"]
+    assert inputs["release-tag"]["type"] == "string" and inputs["release-tag"]["default"] == ""
+    assert flows["ci.yml"]["jobs"]["windows-build"]["uses"] == LOCAL_BUILD
+    assert "with" not in flows["ci.yml"]["jobs"]["windows-build"]  # CI builds the .dev0 source
+    assert flows["release.yml"]["jobs"]["build"]["uses"] == LOCAL_BUILD
 
 
 def test_every_action_is_pinned_by_commit_sha():
     for name, flow in workflows().items():
         for job in flow["jobs"].values():
-            for step in job["steps"]:
+            for step in job.get("steps", []):
                 if "uses" in step:
                     assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", step["uses"]), step
 
 
 def test_the_windows_build_job_builds_installs_uninstalls_and_uploads():
-    job = workflows()["ci.yml"]["jobs"]["windows-build"]
+    job = windows_build_job()
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for needed in ("requirements-build-lock.txt", "PyInstaller --noconfirm --clean "
                    "packaging/transcription_flow.spec", "ci_smoke.py frozen dist/TranscriptionFlow",
@@ -503,7 +533,8 @@ def test_the_windows_build_job_builds_installs_uninstalls_and_uploads():
     assert len(upload) == 1
     assert "Setup-*.exe" in upload[0]["with"]["path"]
     assert "-portable.zip" in upload[0]["with"]["path"]
-    assert "release" not in str(job).lower().replace("no release", "")
+    # It builds and uploads; creating a release is release.yml's draft job alone.
+    assert "gh release" not in str(job) and "permissions" not in job
 
 
 def test_the_tk_window_tests_run_in_their_own_process_on_windows():
@@ -546,7 +577,7 @@ def test_sizes_go_to_the_job_summary(tmp_path, monkeypatch):
 def test_the_upload_runs_only_for_pushes_and_same_repo_prs():
     """review-m4 F6: a fork PR's build must not upload an installer that
     looks like ours."""
-    job = workflows()["ci.yml"]["jobs"]["windows-build"]
+    job = windows_build_job()
     (upload,) = [s for s in job["steps"] if "upload-artifact" in s.get("uses", "")]
     assert upload["if"] == ("${{ !cancelled() && (github.event_name == 'push' || "
                             "github.event.pull_request.head.repo.full_name == github.repository) }}")
@@ -554,7 +585,7 @@ def test_the_upload_runs_only_for_pushes_and_same_repo_prs():
 
 def test_the_iscc_step_checks_the_inno_version_and_the_version_calls():
     """QA B2 and review-m4 F7: fail with the real cause, not a later 'file not found'."""
-    job = workflows()["ci.yml"]["jobs"]["windows-build"]
+    job = windows_build_job()
     (step,) = [s for s in job["steps"] if "ISCC" in s.get("run", "")]
     run = step["run"]
     assert '[version]"6.3.0"' in run and "throw" in run
@@ -566,6 +597,490 @@ def test_the_iscc_step_checks_the_inno_version_and_the_version_calls():
         after = run.split(call, 1)[1].splitlines()[1]
         assert after.strip().startswith("if ($LASTEXITCODE -ne 0 -or -not $"), call
         assert "throw" in after
+
+
+# -- release.yml: tags only, draft only ------------------------------------------------
+
+
+def release_jobs():
+    return workflows()["release.yml"]["jobs"]
+
+
+def job_runs(job):
+    return [step["run"] for step in job.get("steps", []) if "run" in step]
+
+
+def all_runs(flow):
+    return [run for job in flow["jobs"].values() for run in job_runs(job)]
+
+
+def release_create_run():
+    """The one run: line in release.yml that calls gh release."""
+    (run,) = [r for r in all_runs(workflows()["release.yml"]) if "gh release" in r]
+    assert run.count("gh release") == 1
+    return run
+
+
+def test_release_runs_only_on_a_v_tag_push():
+    assert workflows()["release.yml"][True] == {"push": {"tags": ["v*"]}}
+    for name, flow in workflows().items():
+        if name != "release.yml":
+            assert "tags" not in str(flow[True]), name
+
+
+READ_ONLY_GH_API = {"release.yml": [
+    'gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"'
+    " > check-runs.json",
+    'gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)',
+]}
+
+
+def test_release_only_drafts():
+    """Publishing stays a person's step: the workflow creates a draft and
+    nothing in any workflow publishes or edits a release."""
+    for name, flow in workflows().items():
+        runs = "\n".join(all_runs(flow))
+        assert "--draft=false" not in runs and "gh release edit" not in runs, name
+        assert "/releases" not in runs, name
+        # Reads only: every gh api call (continued lines joined, any spacing)
+        # must be exactly one of the two known GETs, so no -X/-f/-F/--input.
+        calls = re.findall(r"\bgh\s+api\b[^\n]*", runs.replace("\\\n", " "))
+        assert sorted(calls) == sorted(READ_ONLY_GH_API.get(name, [])), (name, calls)
+        uses = [step["uses"] for job in flow["jobs"].values()
+                for step in job.get("steps", []) if "uses" in step]
+        for action in uses:  # no third-party release action could publish one
+            assert action.split("@")[0] in (
+                "actions/checkout", "actions/setup-python", "actions/cache",
+                "actions/upload-artifact", "actions/download-artifact"), (name, action)
+        if name != "release.yml":
+            assert "gh release" not in runs, name
+    assert "gh release create \"$TAG\" --draft --verify-tag" in release_create_run()
+
+
+def test_only_the_draft_job_can_write_and_it_runs_no_build_code():
+    for name, flow in workflows().items():
+        for job_name, job in flow["jobs"].items():
+            if (name, job_name) == ("release.yml", "draft"):
+                assert job["permissions"] == {"contents": "write"}
+            elif (name, job_name) == ("release.yml", "check"):  # reads the commit's CI results
+                assert job["permissions"] == {"contents": "read", "checks": "read"}
+            else:
+                assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}
+    draft = release_jobs()["draft"]
+    runs = "\n".join(job_runs(draft))
+    assert "pip" not in runs and "pytest" not in runs and "TranscriptionFlow.exe" not in runs
+    assert draft["runs-on"] == "ubuntu-latest"
+
+
+def test_release_checks_then_builds_on_windows_then_drafts():
+    jobs = release_jobs()
+    assert jobs["build"]["needs"] == "check" and jobs["draft"]["needs"] == "build"
+    assert jobs["build"]["with"] == {"release-tag": "${{ github.ref_name }}"}
+    check = "\n".join(job_runs(jobs["check"]))
+    assert 'check-tag "$TAG"' in check and 'release-notes "$version"' in check
+    assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in check
+    assert jobs["check"]["steps"][0]["with"]["fetch-depth"] == 0  # origin/main is fetched
+    assert windows_build_job()["runs-on"] == "windows-latest"
+    (ci,) = [s for s in jobs["check"]["steps"] if "check-ci" in s.get("run", "")]
+    assert ci["run"].splitlines() == [
+        'gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"'
+        " > check-runs.json",
+        "python3 packaging/buildinfo.py check-ci check-runs.json"]
+    assert ci["env"] == {"GH_TOKEN": "${{ github.token }}"}
+
+
+def check_names(flow):
+    """The check-run names a workflow's jobs get on GitHub."""
+    names = set()
+    for job in flow["jobs"].values():
+        if "uses" in job:
+            called = workflows()[Path(job["uses"]).name]
+            names |= {f"{job['name']} / {c['name']}" for c in called["jobs"].values()}
+        else:
+            names.add(job["name"])
+    return names
+
+
+def test_the_release_waits_for_exactly_the_checks_ci_makes():
+    """review-m5 F3: CI_CHECKS must name every ci.yml job, and the release's
+    own jobs must not have one of those names (they run on the same commit)."""
+    assert check_names(workflows()["ci.yml"]) == set(buildinfo.CI_CHECKS)
+    assert not check_names(workflows()["release.yml"]) & set(buildinfo.CI_CHECKS)
+    assert windows_build_job()["name"] == "Windows build, install and uninstall"
+
+
+def ci_run(name, status="completed", conclusion="success", app="github-actions"):
+    return {"name": name, "status": status, "conclusion": conclusion, "app": {"slug": app}}
+
+
+def ci_reply(runs, total=None):
+    return {"total_count": len(runs) if total is None else total, "check_runs": runs}
+
+
+GREEN = [ci_run(name) for name in buildinfo.CI_CHECKS]
+
+
+def test_ci_passed_when_every_ci_check_succeeded():
+    # The release's own check job, still running, is not one of them.
+    others = [ci_run("Check the tag, the changelog entry, CI and that the commit is on main",
+                     status="in_progress", conclusion=None)]
+    assert buildinfo.ci_problems(ci_reply(GREEN + others)) == []
+
+
+LINUX = buildinfo.CI_CHECKS[0]
+
+
+@pytest.mark.parametrize("reply, why", [
+    (ci_reply(GREEN[1:]), f"no '{LINUX}' check"),
+    (ci_reply([ci_run(LINUX, conclusion="failure"), *GREEN[1:]]), f"'{LINUX}' is completed/failure"),
+    (ci_reply([ci_run(LINUX, conclusion="cancelled"), *GREEN[1:]]), "is completed/cancelled"),
+    (ci_reply([ci_run(LINUX, status="in_progress", conclusion=None), *GREEN[1:]]),
+     "is in_progress/None"),
+    (ci_reply([ci_run(LINUX, app="someone-else"), *GREEN[1:]]), f"no '{LINUX}' check"),
+    (ci_reply([ci_run(LINUX, conclusion="skipped"), *GREEN[1:]]), "is completed/skipped"),
+    (ci_reply([ci_run(LINUX, conclusion="neutral"), *GREEN[1:]]), "is completed/neutral"),
+    (ci_reply([ci_run(LINUX, conclusion="failure"), *GREEN]), "is completed/failure"),
+    (ci_reply([*GREEN, ci_run(LINUX, conclusion="failure")]), "is completed/failure"),
+    (ci_reply(GREEN, total=101), "the list is incomplete"),
+    ({"total_count": 0}, "no check_runs list"),
+    ([], "no check_runs list"),
+])
+def test_ci_not_passed_fails_closed(reply, why):
+    problems = buildinfo.ci_problems(reply)
+    assert len(problems) == 1 and why in problems[0], problems
+
+
+def test_the_check_ci_command(tmp_path):
+    script = str(PACKAGING / "buildinfo.py")
+    good, bad = tmp_path / "good.json", tmp_path / "bad.json"
+    good.write_text(json.dumps(ci_reply(GREEN)), "utf-8")
+    bad.write_text("<html>rate limited</html>", "utf-8")
+    for path, code, out in ((good, 0, "CI passed"), (bad, 1, "FAIL: cannot read bad.json"),
+                            (tmp_path / "missing.json", 1, "cannot read missing.json")):
+        done = subprocess.run([sys.executable, "-I", script, "check-ci", str(path)],
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == code and out in done.stdout + done.stderr, done
+        assert "Traceback" not in done.stderr
+
+
+# -- the draft step, run for real in bash with a stand-in gh ----------------------
+
+
+def run_draft_step(tmp_path, tag, version, moved_to=None):
+    """Runs the draft step's script with the build's files in release/ and a
+    fake gh that answers `gh api` with the tag's commit and records the rest."""
+    work = tmp_path / "work"
+    work.mkdir()
+    source_tree(work, version)
+    (work / "CHANGELOG.md").write_text(f"## [{version}] - 2026-10-30\n\n- Notes.\n", "utf-8")
+    (work / "release").mkdir()
+    for name in (f"TranscriptionFlow-Setup-{version}.exe",
+                 f"TranscriptionFlow-{version}-portable.zip"):
+        (work / "release" / name).write_bytes(name.encode())
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python3").write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "$@"\n')
+    (bin_dir / "gh").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" >> "$GH_LOG"\necho ---- >> "$GH_LOG"\n'
+        'if [ "$1" = api ]; then echo "$FAKE_TAG_SHA"; fi\n')
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    built = "1" * 40
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "TAG": tag,
+           "GITHUB_SHA": built, "GH_REPO": "owner/repo", "GH_LOG": str(tmp_path / "gh.log"),
+           "FAKE_TAG_SHA": moved_to or built}
+    done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
+                           release_create_run()], cwd=work, env=env, capture_output=True,
+                          text=True, timeout=60)
+    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
+    calls = [c.split("\n")[:-1] for c in log.split("----\n") if c]
+    return done, calls
+
+
+needs_bash = pytest.mark.skipif(sys.platform == "win32" or not shutil.which("bash"),
+                                reason="runs the ubuntu-latest draft step in bash")
+
+
+@needs_bash
+def test_the_draft_step_creates_a_normal_draft_for_a_release(tmp_path):
+    done, calls = run_draft_step(tmp_path, "v0.1.0", "0.1.0")
+    assert done.returncode == 0, done.stderr
+    api, create = calls
+    assert api == ["api", "repos/owner/repo/commits/v0.1.0", "--jq", ".sha"]
+    assert create[:5] == ["release", "create", "v0.1.0", "--draft", "--verify-tag"]
+    assert "--prerelease" not in create
+    assert create[-3:] == ["release/TranscriptionFlow-Setup-0.1.0.exe",
+                           "release/TranscriptionFlow-0.1.0-portable.zip",
+                           "release/SHA256SUMS.txt"]
+
+
+@needs_bash
+@pytest.mark.parametrize("tag, version", [("v0.1.0rc1", "0.1.0rc1"), ("v0.2.0a1", "0.2.0a1"),
+                                          ("v0.2.0b3", "0.2.0b3")])
+def test_the_draft_step_marks_a_pre_release(tmp_path, tag, version):
+    """review-m5 F5: an rc must never become the 'latest' release."""
+    done, calls = run_draft_step(tmp_path, tag, version)
+    assert done.returncode == 0, done.stderr
+    create = calls[-1]
+    assert create[:6] == ["release", "create", tag, "--draft", "--verify-tag", "--prerelease"]
+
+
+@needs_bash
+def test_the_draft_step_stops_if_the_tag_moved_after_the_build(tmp_path):
+    """review-m5 F6: the files were built from GITHUB_SHA; a draft on a
+    moved tag would attach them to another commit."""
+    done, calls = run_draft_step(tmp_path, "v0.1.0", "0.1.0", moved_to="2" * 40)
+    assert done.returncode == 1
+    assert f"v0.1.0 now points at {'2' * 40}, not at the built commit" in done.stdout
+    assert [c[0] for c in calls] == ["api"]  # no gh release create
+
+
+def test_the_draft_has_the_installer_the_zip_and_their_sha256sums():
+    steps = release_jobs()["draft"]["steps"]
+    (download,) = [s for s in steps if "download-artifact" in s.get("uses", "")]
+    (upload,) = [s for s in windows_build_job()["steps"] if "upload-artifact" in s.get("uses", "")]
+    assert download["with"]["name"] == upload["with"]["name"]
+    create = release_create_run()
+    assert ('sha256sum "TranscriptionFlow-Setup-$version.exe" '
+            '"TranscriptionFlow-$version-portable.zip" > SHA256SUMS.txt') in create
+    for asset in ('"release/TranscriptionFlow-Setup-$version.exe"',
+                  '"release/TranscriptionFlow-$version-portable.zip"', "release/SHA256SUMS.txt",
+                  "--notes-file notes.md"):
+        assert asset in create, asset
+    assert 'release-notes "$version" > notes.md' in create
+
+
+def test_the_tag_reaches_scripts_only_through_env():
+    """A tag name is attacker-shaped text: never expand ${{ }} inside run:."""
+    for name, flow in workflows().items():
+        for run in all_runs(flow):
+            assert isinstance(run, str) and "${{" not in run, (name, run)
+
+
+def test_a_release_build_stamps_the_tag_version_before_pyinstaller():
+    steps = windows_build_job()["steps"]
+    names = [s.get("name", "") for s in steps]
+    stamp = names.index("Release builds take their version from the tag")
+    assert stamp < names.index("Build the onedir with PyInstaller")
+    assert steps[stamp]["if"] == "${{ inputs.release-tag != '' }}"
+    assert steps[stamp]["run"] == 'python packaging/buildinfo.py stamp-version "$env:RELEASE_TAG"'
+    assert steps[stamp]["env"] == {"RELEASE_TAG": "${{ inputs.release-tag }}"}
+
+
+# -- release versions and notes ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tag, version", [("v0.1.0", "0.1.0"), ("v1.20.3", "1.20.3"),
+                                          ("v0.2.0rc1", "0.2.0rc1"), ("v0.2.0b2", "0.2.0b2")])
+def test_tag_version(tag, version):
+    assert buildinfo.tag_version(tag) == version
+
+
+@pytest.mark.parametrize("tag", ["0.1.0", "v0.1", "v0.1.0-beta", "v0.1.0.dev0", "v0.1.0\n",
+                                 "v0.1.0; x", "V0.1.0", "vv0.1.0", "v0.1.0rc",
+                                 # QA B1: ASCII digits only, no leading zeros
+                                 "v\u0660.\u0661.\u0660", "v0.1.0rc\uff11", "v00.1.0", "v0.01.0",
+                                 "v0.1.00", "v0.1.0rc01"])
+def test_tag_version_refuses_anything_else(tag):
+    with pytest.raises(SystemExit, match="not a release tag"):
+        buildinfo.tag_version(tag)
+
+
+def source_tree(tmp_path, version="0.1.0.dev0"):
+    """A copy of buildinfo.py and the package __init__ with the given version."""
+    (tmp_path / "packaging").mkdir()
+    (tmp_path / "packaging" / "buildinfo.py").write_bytes((PACKAGING / "buildinfo.py").read_bytes())
+    init = tmp_path / "src" / "transcription_flow" / "__init__.py"
+    init.parent.mkdir(parents=True)
+    real = (ROOT / "src" / "transcription_flow" / "__init__.py").read_text("utf-8")
+    init.write_text(buildinfo._VERSION_LINE.sub(f'__version__ = "{version}"', real), "utf-8")
+    return init
+
+
+def test_stamp_version_turns_the_dev_source_into_the_tag_version(tmp_path):
+    init = source_tree(tmp_path)
+    before = init.read_text("utf-8")
+    assert buildinfo.stamp_version("v0.1.0", root=tmp_path) == "0.1.0"
+    assert buildinfo.app_version(tmp_path) == "0.1.0"
+    assert init.read_text("utf-8") == before.replace('"0.1.0.dev0"', '"0.1.0"')
+    assert buildinfo.numeric_version(buildinfo.app_version(tmp_path)) == "0.1.0.0"
+    assert "StringStruct('ProductVersion', '0.1.0')" in buildinfo.version_info_text("0.1.0")
+
+
+def test_stamp_version_refuses_a_tag_for_another_release(tmp_path):
+    init = source_tree(tmp_path)
+    before = init.read_text("utf-8")
+    for tag in ("v0.2.0", "v0.1.1", "v1.1.0"):
+        with pytest.raises(SystemExit, match="does not match the source version 0.1.0.dev0"):
+            buildinfo.stamp_version(tag, root=tmp_path)
+    assert init.read_text("utf-8") == before
+
+
+@pytest.mark.parametrize("version, flag", [("0.1.0", ""), ("10.2.0", ""), ("0.1.0rc1", "--prerelease"),
+                                           ("0.2.0a1", "--prerelease"), ("0.2.0b3", "--prerelease")])
+def test_prerelease_flag(version, flag):
+    assert buildinfo.prerelease_flag(version) == flag
+
+
+def test_prerelease_flag_refuses_a_non_release_version():
+    with pytest.raises(SystemExit, match="not a release tag"):
+        buildinfo.prerelease_flag("0.1.0.dev0")
+
+
+@pytest.mark.parametrize("tag, version", [("v0.0.0", "0.0.0"), ("v10.0.0rc0", "10.0.0rc0")])
+def test_tag_version_takes_zero_and_many_digit_parts(tag, version):
+    assert buildinfo.tag_version(tag) == version
+
+
+def test_stamp_version_keeps_the_pre_release_part(tmp_path):
+    """review-m5 F5: v0.1.0rc1 builds 0.1.0rc1, so the file names match."""
+    init = source_tree(tmp_path, "0.1.0rc1.dev0")
+    before = init.read_text("utf-8")
+    assert buildinfo.stamp_version("v0.1.0rc1", root=tmp_path) == "0.1.0rc1"
+    assert buildinfo.app_version(tmp_path) == "0.1.0rc1"
+    assert init.read_text("utf-8") == before.replace('"0.1.0rc1.dev0"', '"0.1.0rc1"')
+
+
+@pytest.mark.parametrize("source, tag", [("0.1.0.dev0", "v0.1.0rc1"), ("0.1.0rc1.dev0", "v0.1.0a1"),
+                                         ("0.1.0rc1.dev0", "v0.1.0"), ("0.1.0rc1", "v0.1.0rc2"),
+                                         ("0.1.0", "v0.1.0rc1")])
+def test_check_tag_compares_the_pre_release_part_too(tmp_path, source, tag):
+    """QA B2: a tag is accepted only for exactly the release being worked on."""
+    source_tree(tmp_path, source)
+    with pytest.raises(SystemExit, match=f"does not match the source version {re.escape(source)}"):
+        buildinfo.check_tag(tag, root=tmp_path)
+
+
+@pytest.mark.parametrize("source, tag", [("0.1.0.dev0", "v0.1.0"), ("0.1.0", "v0.1.0"),
+                                         ("0.1.0rc1.dev0", "v0.1.0rc1"), ("0.1.0rc1", "v0.1.0rc1"),
+                                         ("0.1.0rc1.dev12", "v0.1.0rc1")])
+def test_check_tag_takes_the_release_being_worked_on(tmp_path, source, tag):
+    source_tree(tmp_path, source)
+    assert buildinfo.check_tag(tag, root=tmp_path) == tag[1:]
+
+
+def test_check_tag_changes_nothing(tmp_path):
+    init = source_tree(tmp_path)
+    before = init.read_text("utf-8")
+    assert buildinfo.check_tag("v0.1.0", root=tmp_path) == "0.1.0"
+    with pytest.raises(SystemExit, match="does not match the source version"):
+        buildinfo.check_tag("v0.2.0", root=tmp_path)
+    assert init.read_text("utf-8") == before
+
+
+def test_the_cli_stamps_what_ci_then_reads_as_the_version(tmp_path):
+    """The release build's steps: stamp-version v0.1.0, then the ISCC step's
+    `version` and `numeric-version` calls give 0.1.0, not 0.1.0.dev0."""
+    source_tree(tmp_path)
+    script = str(tmp_path / "packaging" / "buildinfo.py")
+
+    def run(*args):
+        return subprocess.run([sys.executable, script, *args], capture_output=True,
+                              text=True, env=child_env(), timeout=60)
+
+    assert run("version").stdout.strip() == "0.1.0.dev0"
+    assert run("stamp-version", "v0.1.0").stdout.strip() == "0.1.0"
+    assert run("version").stdout.strip() == "0.1.0"
+    assert run("numeric-version").stdout.strip() == "0.1.0.0"
+    bad = run("stamp-version", "v0.1")
+    assert bad.returncode == 1 and "not a release tag" in bad.stderr
+
+
+CHANGELOG_FIXTURE = """# Changelog
+
+## [Unreleased]
+
+- Next thing.
+
+## [0.2.0] - 2026-11-02
+
+### Fixed
+- Two.
+
+## [0.1.0] - 2026-10-30
+
+### Added
+- One.
+
+[0.2.0]: https://example.invalid/v0.2.0
+"""
+
+
+def test_release_notes_are_that_versions_section(tmp_path):
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(CHANGELOG_FIXTURE, "utf-8")
+    assert buildinfo.release_notes("0.2.0", changelog) == "### Fixed\n- Two.\n"
+    assert buildinfo.release_notes("0.1.0", changelog) == "### Added\n- One.\n"
+
+
+@pytest.mark.parametrize("text, why", [
+    ("## [0.1.0] - 2026-10-30\n\n- One.\n", "no '## [0.3.0]' section"),
+    ("## [0.3.0] - Unreleased\n\n- One.\n", "give '## [0.3.0]' its release date"),
+    ("## [0.3.0]\n\n- One.\n", "give '## [0.3.0]' its release date"),
+    ("## [0.3.0] - 2026-10-30\n\n## [0.1.0] - 2026-10-01\n- One.\n", "section is empty"),
+    ("## [0.3.0.1] - 2026-10-30\n\n- One.\n", "no '## [0.3.0]' section"),
+    # QA B3: a real calendar date, written YYYY-MM-DD in ASCII digits
+    ("## [0.3.0] - 2026-13-45\n\n- One.\n", "'2026-13-45' in '## [0.3.0]' is not a real date"),
+    ("## [0.3.0] - 2026-02-30\n\n- One.\n", "is not a real date"),
+    ("## [0.3.0] - 20261030\n\n- One.\n", "give '## [0.3.0]' its release date"),
+    ("## [0.3.0] - \u0662\u0660\u0662\u0666-10-30\n\n- One.\n", "give '## [0.3.0]' its release date"),
+    # QA B4: two sections for one version are ambiguous
+    ("## [0.3.0] - 2026-10-30\n\n- One.\n\n## [0.3.0] - 2026-10-31\n\n- Two.\n",
+     "has 2 '## [0.3.0]' sections"),
+])
+def test_release_notes_stop_a_release_without_a_dated_entry(tmp_path, text, why):
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(text, "utf-8")
+    with pytest.raises(SystemExit, match=re.escape(why)):
+        buildinfo.release_notes("0.3.0", changelog)
+
+
+def source_release_notes(tmp_path):
+    """The notes the source version would get: its section is dated only in
+    the commit that gets tagged, so date a copy to read them."""
+    release = buildinfo.target_version(buildinfo.app_version())
+    text = (ROOT / "CHANGELOG.md").read_text("utf-8")
+    heading = re.search(rf"^## \[{re.escape(release)}\] - (Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
+                        text, re.M)
+    assert heading, release
+    dated = tmp_path / "CHANGELOG.md"
+    dated.write_text(text.replace(heading.group(0), f"## [{release}] - 2026-01-01"), "utf-8")
+    return buildinfo.release_notes(release, dated)
+
+
+def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
+    notes = source_release_notes(tmp_path)
+    assert "### Added" in notes and "## [" not in notes
+
+
+def test_the_release_notes_have_only_absolute_links(tmp_path):
+    """review-m5 F4: on a release page a relative link resolves under
+    /releases/tag/ and 404s."""
+    notes = source_release_notes(tmp_path)
+    links = re.findall(r"\]\(([^)\s]*)\)", notes) + re.findall(r"<([^>\s]+)>", notes)
+    assert links, "the notes link the SmartScreen guide"
+    for link in links:
+        assert link.startswith(f"{buildinfo.REPO_URL}/") or re.match(r"https://", link), link
+    assert f"{buildinfo.REPO_URL}/blob/main/docs/smartscreen.md" in notes
+
+
+@pytest.mark.parametrize("args, setup, message", [
+    (["release-notes", "0.1.0"], None, "cannot read CHANGELOG.md: "),
+    (["release-notes", "0.1.0"], "latin1", "cannot read CHANGELOG.md: "),
+    (["version"], "no-version", 'has no __version__ = "..." line'),
+    (["check-tag", "v0.1.0"], "no-version", 'has no __version__ = "..." line'),
+])
+def test_bad_inputs_give_one_line_not_a_traceback(tmp_path, args, setup, message):
+    """QA B5."""
+    init = source_tree(tmp_path)
+    if setup == "latin1":
+        (tmp_path / "CHANGELOG.md").write_bytes("## [0.1.0] - 2026-10-30\n\n- Caf\u00e9.\n".encode("latin-1"))
+    elif setup == "no-version":
+        init.write_text(buildinfo._VERSION_LINE.sub("", init.read_text("utf-8")), "utf-8")
+    done = subprocess.run([sys.executable, "-I", str(tmp_path / "packaging" / "buildinfo.py"), *args],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 1 and "Traceback" not in done.stderr, done.stderr
+    assert done.stderr.count("\n") == 1 and message in done.stderr, done.stderr
 
 
 # -- CI smoke: the frozen checks, Defender and the uninstall sentinels ---------------------

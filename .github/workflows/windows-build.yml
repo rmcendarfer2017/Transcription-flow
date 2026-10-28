@@ -1,0 +1,116 @@
+name: windows-build
+
+# The Windows build, its smoke tests and the artifact upload, shared by
+# ci.yml (every PR and push to main) and release.yml (tags), so a release is
+# built and checked exactly like CI. Public repo: GitHub-hosted runners only.
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: "A v* tag: build that version (buildinfo.py stamp-version) instead of the source's .dev0"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows build, install and uninstall
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build-lock.txt
+      - name: Install pinned build dependencies (app + PyInstaller)
+        run: "python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build-lock.txt"
+      - name: Cache tiny.en
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-models/tiny.en
+          key: whisper-tiny.en-${{ hashFiles('src/transcription_flow/models_manifest.json') }}
+      - name: Download tiny.en with our downloader (checksums re-verified on a cache hit too)
+        run: python -m transcription_flow --verify --model tiny.en --models-dir .ci-models
+        env:
+          PYTHONPATH: src
+      - name: Release builds take their version from the tag
+        if: ${{ inputs.release-tag != '' }}
+        run: python packaging/buildinfo.py stamp-version "$env:RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+      - name: Build the onedir with PyInstaller
+        run: python -m PyInstaller --noconfirm --clean packaging/transcription_flow.spec
+      - name: Smoke-test the build (selftest on tiny.en, bundle check, GPU probe, LGPL modules loose, licences)
+        run: python packaging/ci_smoke.py frozen dist/TranscriptionFlow tests/fixtures/hello.wav .ci-models
+      - name: Build the installer with Inno Setup
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner ($iscc)" }
+          # ISCC.exe's numeric VersionInfo fields are all 0 (PR #4 CI): take the
+          # first x.y.z from the version strings of Inno's files or its uninstall key.
+          $uninstall = "SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+                       "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+          $sources = @()
+          foreach ($file in "ISCC.exe", "ISCmplr.dll", "Compil32.exe") {
+            $info = (Get-Item (Join-Path (Split-Path $iscc) $file) -ErrorAction SilentlyContinue).VersionInfo
+            $sources += $info.ProductVersion, $info.FileVersion
+          }
+          foreach ($hive in "HKLM:", "HKCU:") {
+            foreach ($key in $uninstall) {
+              $sources += (Get-ItemProperty "$hive\$key" -ErrorAction SilentlyContinue).DisplayVersion
+            }
+          }
+          $isccVer = $null
+          foreach ($text in $sources) {
+            if ("$text" -match '\b([1-9]\d*\.\d+\.\d+)') { $isccVer = [version]($Matches[1]); break }
+          }
+          if (-not $isccVer) { throw "could not read the Inno Setup version (the version strings of ISCC.exe, ISCmplr.dll, Compil32.exe and the uninstall keys gave: '$($sources -join "', '")')" }
+          Write-Output "Inno Setup $isccVer"
+          if ($isccVer -lt [version]"6.3.0") { throw "installer.iss needs Inno Setup 6.3 or newer (x64compatible); this runner has $isccVer" }
+          $ver = python packaging/buildinfo.py version
+          if ($LASTEXITCODE -ne 0 -or -not $ver) { throw "buildinfo.py version failed (exit $LASTEXITCODE)" }
+          $num = python packaging/buildinfo.py numeric-version
+          if ($LASTEXITCODE -ne 0 -or -not $num) { throw "buildinfo.py numeric-version failed (exit $LASTEXITCODE)" }
+          & $iscc "/DAppVersion=$ver" "/DAppNumVersion=$num" "/DSourceDir=$PWD\dist\TranscriptionFlow" `
+            "/DOutputDir=$PWD\dist\out" "/DIconFile=$PWD\build\transcription_flow\TranscriptionFlow.ico" `
+            packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          "TF_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Portable zip
+        run: python packaging/buildinfo.py portable-zip dist/TranscriptionFlow "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
+      - name: Silent install, then check the files, Start menu shortcut and Run value
+        run: python packaging/ci_smoke.py install "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+      - name: Installing over it keeps the autostart choice (on, then off)
+        run: python packaging/ci_smoke.py upgrade "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+      - name: The installed copy passes the same smoke test
+        run: python packaging/ci_smoke.py frozen "$env:LOCALAPPDATA\Programs\Transcription Flow" tests/fixtures/hello.wav .ci-models
+      - name: Silent uninstall removes the app and keeps settings and models
+        run: python packaging/ci_smoke.py uninstall
+      - name: Reinstall, then a silent uninstall with /DELETEUSERDATA removes the data too
+        run: |
+          python packaging/ci_smoke.py install "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/ci_smoke.py uninstall --delete-user-data
+      - name: Defender scan of the build, if the runner has Defender
+        run: python packaging/ci_smoke.py defender dist
+      - name: Sizes in the job summary
+        if: ${{ !cancelled() }}
+        run: python packaging/ci_smoke.py sizes dist/TranscriptionFlow "dist/out/TranscriptionFlow-Setup-$env:TF_VERSION.exe" "dist/out/TranscriptionFlow-$env:TF_VERSION-portable.zip"
+      # Only builds of this repo's own branches: a fork PR's installer must not
+      # look like ours (review-m4 F6).
+      - name: Upload the installer and portable zip
+        if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: transcription-flow-windows-${{ github.sha }}
+          path: |
+            dist/out/TranscriptionFlow-Setup-*.exe
+            dist/out/TranscriptionFlow-*-portable.zip
+          if-no-files-found: error
+          retention-days: 14
