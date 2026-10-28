@@ -337,9 +337,12 @@ pre-release, so it never becomes the "latest" release that the Download
 link serves. It needs its own version and changelog section: set
 `__version__ = "0.1.0rc1.dev0"` and add a dated `## [0.1.0rc1] - YYYY-MM-DD`
 section (the `0.1.0` section does not count) before tagging, then go back
-to `0.1.0.dev0` afterwards. Links in a changelog section must be absolute
-(`https://github.com/...`): the section becomes the release notes, where
-relative links break.
+to `0.1.0.dev0` afterwards. The tag has no hyphen: `v0.1.0rc1`, not
+`v0.1.0-rc1`. The final `v0.1.0` then needs `__version__ = "0.1.0.dev0"`
+(or `"0.1.0"`) and its own dated `## [0.1.0] - YYYY-MM-DD` section; keep
+the `0.1.0rc1` section below it. Links in a changelog section must be
+absolute (`https://github.com/...`): the section becomes the release
+notes, where relative links break.
 
 ## Third-party licences
 
