@@ -51,9 +51,7 @@ A setup window opens:
 3. **Dictation key** (Right Ctrl by default).
 4. **Try it**: hold the key and say something into the box.
 
-<!-- SCREENSHOT (Ryan): docs/images/setup-window.png
-     The setup window during the model download. -->
-_Screenshot to come: the setup window._
+![The setup window's Speech model page: tiny.en, base.en and small.en (recommended) with a Download button](docs/images/setup-window.png)
 
 If you close the window before a model is downloaded, it opens again at the
 next start. After that the app lives in the notification area (the tray)
