@@ -22,9 +22,10 @@ your desktop._
    download `TranscriptionFlow-Setup-<version>.exe`.
 2. Double-click it. Because the installer is not code-signed yet, Windows
    shows **"Windows protected your PC"**. Click **More info**, then
-   **Run anyway**. [docs/smartscreen.md](docs/smartscreen.md) shows each
-   step with screenshots, explains why, and shows how to check the file's
-   SHA-256 against the release's `SHA256SUMS.txt` first.
+   **Run anyway**. [docs/smartscreen.md](docs/smartscreen.md) shows the
+   warning and the installer's options page, explains why the warning
+   appears, and shows how to check the file's SHA-256 against the
+   release's `SHA256SUMS.txt` first.
 3. The installer installs for your user only (no administrator password)
    to `%LOCALAPPDATA%\Programs\Transcription Flow`, adds a Start menu entry
    and, unless you untick it, starts the app when you sign in.
