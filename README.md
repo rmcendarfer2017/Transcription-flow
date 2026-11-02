@@ -5,9 +5,13 @@ using. Local push-to-talk dictation for Windows, inspired by Wispr Flow. It
 runs a Whisper speech model on your own PC, so your voice never leaves it
 and there is no subscription.
 
-<!-- SCREENSHOT (Ryan): docs/images/pill.gif
-     A short GIF of the pill at the bottom of the screen while dictating into Notepad. -->
-_Animation to come: the recording pill while dictating into Notepad._
+![The black pill: white bars follow your voice while you hold the key, then ripple while your words are transcribed](docs/images/pill.gif)
+
+_The pill that sits at the bottom of the screen: the bars follow your voice
+while you hold the key, then ripple while the text is transcribed. Rendered
+from the app's own overlay code at 200% scale, on Linux with a simulated
+voice (see `tools/render_pill.py`); on Windows the same drawing floats over
+your desktop._
 
 **[Download for Windows](https://github.com/rmcendarfer2017/Transcription-flow/releases/latest)**
 (Windows 10 or 11, 64-bit; no Python needed)
@@ -249,6 +253,7 @@ src/transcription_flow/
   ui/wizard.py       the first-run setup window (Tk)
   ui/display.py      DPI awareness and the screen's work area
 dictation.py         runs the app from a source checkout
+tools/render_pill.py renders docs/images/pill.gif from ui/overlay.py
 tests/               pytest suite (no microphone, hotkey or network needed)
 packaging/
   transcription_flow.spec  PyInstaller (onedir, windowed, no UPX)
