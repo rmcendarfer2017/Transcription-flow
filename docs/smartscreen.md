@@ -40,12 +40,12 @@ publisher" and a **Run anyway** button.
 
 ![The "Windows protected your PC" box after More info, showing Unknown publisher and the Run anyway button](images/smartscreen-run-anyway.png)
 
-_Your file name shows your version number._
-
 Click **Run anyway**. The installer starts. It installs for your user only,
 so Windows does not ask for an administrator password.
 
 ![The installer's Select Additional Tasks page with "Start Transcription Flow when I sign in to Windows" ticked](images/installer-1-tasks.png)
+
+_The file name and the installer's title show your version number._
 
 ## Why the warning appears
 
