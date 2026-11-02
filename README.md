@@ -5,9 +5,13 @@ using. Local push-to-talk dictation for Windows, inspired by Wispr Flow. It
 runs a Whisper speech model on your own PC, so your voice never leaves it
 and there is no subscription.
 
-<!-- SCREENSHOT (Ryan): docs/images/pill.gif
-     A short GIF of the pill at the bottom of the screen while dictating into Notepad. -->
-_Animation to come: the recording pill while dictating into Notepad._
+![The black pill: white bars follow your voice while you hold the key, then ripple while your words are transcribed](docs/images/pill.gif)
+
+_The pill that sits at the bottom of the screen: the bars follow your voice
+while you hold the key, then ripple while the text is transcribed. Rendered
+from the app's own overlay code at 200% scale, on Linux with a simulated
+voice (see `tools/render_pill.py`); on Windows the same drawing floats over
+your desktop._
 
 **[Download for Windows](https://github.com/rmcendarfer2017/Transcription-flow/releases/latest)**
 (Windows 10 or 11, 64-bit; no Python needed)
@@ -18,9 +22,10 @@ _Animation to come: the recording pill while dictating into Notepad._
    download `TranscriptionFlow-Setup-<version>.exe`.
 2. Double-click it. Because the installer is not code-signed yet, Windows
    shows **"Windows protected your PC"**. Click **More info**, then
-   **Run anyway**. [docs/smartscreen.md](docs/smartscreen.md) shows each
-   step with screenshots, explains why, and shows how to check the file's
-   SHA-256 against the release's `SHA256SUMS.txt` first.
+   **Run anyway**. [docs/smartscreen.md](docs/smartscreen.md) shows the
+   warning and the installer's options page, explains why the warning
+   appears, and shows how to check the file's SHA-256 against the
+   release's `SHA256SUMS.txt` first.
 3. The installer installs for your user only (no administrator password)
    to `%LOCALAPPDATA%\Programs\Transcription Flow`, adds a Start menu entry
    and, unless you untick it, starts the app when you sign in.
@@ -47,9 +52,7 @@ A setup window opens:
 3. **Dictation key** (Right Ctrl by default).
 4. **Try it**: hold the key and say something into the box.
 
-<!-- SCREENSHOT (Ryan): docs/images/setup-window.png
-     The setup window during the model download. -->
-_Screenshot to come: the setup window._
+![The setup window's Speech model page: tiny.en, base.en and small.en (recommended) with a Download button](docs/images/setup-window.png)
 
 If you close the window before a model is downloaded, it opens again at the
 next start. After that the app lives in the notification area (the tray)
@@ -249,6 +252,7 @@ src/transcription_flow/
   ui/wizard.py       the first-run setup window (Tk)
   ui/display.py      DPI awareness and the screen's work area
 dictation.py         runs the app from a source checkout
+tools/render_pill.py renders docs/images/pill.gif from ui/overlay.py
 tests/               pytest suite (no microphone, hotkey or network needed)
 packaging/
   transcription_flow.spec  PyInstaller (onedir, windowed, no UPX)

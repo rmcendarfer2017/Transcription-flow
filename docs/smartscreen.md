@@ -35,23 +35,17 @@ file and download it again from the
 Double-click the installer. Windows shows **"Windows protected your PC"**
 with only a **Don't run** button.
 
-<!-- SCREENSHOT (Ryan): docs/images/smartscreen-1-protected.png
-     The first blue "Windows protected your PC" box, before "More info". -->
-_Screenshot to come: the "Windows protected your PC" box._
-
 Click **More info**. The box now shows the file name, "Publisher: Unknown
 publisher" and a **Run anyway** button.
 
-<!-- SCREENSHOT (Ryan): docs/images/smartscreen-2-run-anyway.png
-     The same box after "More info", showing "Unknown publisher" and "Run anyway". -->
-_Screenshot to come: the box after "More info", with **Run anyway**._
+![The "Windows protected your PC" box after More info, showing Unknown publisher and the Run anyway button](images/smartscreen-run-anyway.png)
 
 Click **Run anyway**. The installer starts. It installs for your user only,
 so Windows does not ask for an administrator password.
 
-<!-- SCREENSHOT (Ryan): docs/images/installer-1-tasks.png
-     The installer page with "Start Transcription Flow when I sign in to Windows". -->
-_Screenshot to come: the installer's "Start when I sign in" page._
+![The installer's Select Additional Tasks page with "Start Transcription Flow when I sign in to Windows" ticked](images/installer-1-tasks.png)
+
+_The file name and the installer's title show your version number._
 
 ## Why the warning appears
 
