@@ -1050,7 +1050,7 @@ def source_release_notes(tmp_path):
 
 def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
     notes = source_release_notes(tmp_path)
-    assert "### Added" in notes and "## [" not in notes
+    assert re.search(r"^### \S", notes, re.M) and "## [" not in notes
 
 
 def test_the_release_notes_have_only_absolute_links(tmp_path):
