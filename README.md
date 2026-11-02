@@ -317,7 +317,10 @@ per-user (no admin prompt) and unsigned for now.
 ### Making a release
 
 1. Set the date of the version's section in `CHANGELOG.md`
-   (`## [0.1.0] - YYYY-MM-DD`) and merge that to `main`.
+   (`## [0.1.0] - YYYY-MM-DD`) and merge that to `main`. The section is
+   the release page's notes, so first move out entries that never reach
+   users (repo or docs-only changes, such as a removed docs image) and
+   copy in the full Known limitations list from the previous release.
 2. Wait until CI on `main` has passed for that commit. The release stops
    if CI is missing, still running or failed for the tagged commit; after
    CI finishes, re-run the failed release jobs from the Actions tab. If a
