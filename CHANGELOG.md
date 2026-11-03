@@ -8,6 +8,18 @@ A release build takes its notes from the section for its version, so the
 section must carry the release date (`## [0.1.0] - YYYY-MM-DD`) in the
 commit that is tagged.
 
+## [0.1.1] - Unreleased
+
+### Removed
+
+- `docs/images/pill.png`, a still of the pill that nothing linked to (the
+  README shows the GIF).
+
+### Known limitations
+
+- Not code-signed: Windows SmartScreen warns the first time (see
+  [the SmartScreen guide](https://github.com/rmcendarfer2017/Transcription-flow/blob/main/docs/smartscreen.md)).
+
 ## [0.1.0] - 2026-11-02
 
 The first Windows release: a per-user installer and a portable zip. It is

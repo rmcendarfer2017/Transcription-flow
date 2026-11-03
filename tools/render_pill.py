@@ -1,10 +1,15 @@
-"""Render the README's pill images from the app's real overlay code.
+"""Render the README's pill GIF from the app's real overlay code.
 
 Runs ``transcription_flow.ui.overlay.Overlay`` (the shipped Tk pill) under a
 virtual X display, drives it through recording (level meter fed by a
 synthetic speech signal through the recorder's own ``_level``) and
-transcribing, grabs each frame and writes ``docs/images/pill.gif`` and
-``docs/images/pill.png``.
+transcribing, grabs each frame and writes ``docs/images/pill.gif``.
+
+The GIF is not byte-reproducible: frames vary run to run. Each frame is
+grabbed after a wall-clock wait of FRAME_MS that is not locked to the
+overlay's own ``after`` tick, so a meter step can be skipped or shown
+twice. Fine for a docs image; don't test a fresh render against the
+committed file.
 
 Linux only (Tk on X11). Differences from Windows, handled here and said in
 the README:
@@ -44,7 +49,6 @@ KEY = (255, 0, 255)  # Tk's "magenta", the overlay's TRANSPARENT colour
 PAD = (36, 24)  # background around the pill, in pixels (x, y)
 FRAME_MS = 40  # the overlay's VISIBLE_TICK_MS
 RECORD_FRAMES, TRANSCRIBE_FRAMES, HIDDEN_FRAMES = 75, 35, 15
-STILL_FRAME = 40  # a recording frame mid-word, for pill.png
 
 
 def speech_levels(frames: int, seed: int = 7) -> list:
@@ -132,11 +136,10 @@ def main() -> int:
     root.destroy()
 
     OUT.mkdir(parents=True, exist_ok=True)
-    frames[STILL_FRAME].save(OUT / "pill.png", optimize=True)
-    frames[0].save(OUT / "pill.gif", save_all=True, append_images=frames[1:],
+    gif = OUT / "pill.gif"
+    frames[0].save(gif, save_all=True, append_images=frames[1:],
                    duration=FRAME_MS, loop=0, optimize=True, disposal=1)
-    for name in ("pill.png", "pill.gif"):
-        print(f"{OUT / name}: {(OUT / name).stat().st_size} bytes")
+    print(f"{gif}: {gif.stat().st_size} bytes")
     return 0
 
 

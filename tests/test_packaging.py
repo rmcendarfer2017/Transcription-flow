@@ -1048,9 +1048,26 @@ def source_release_notes(tmp_path):
     return buildinfo.release_notes(release, dated)
 
 
+CHANGE_ENTRY = re.compile(
+    r"^### (Added|Changed|Deprecated|Removed|Fixed|Security)\b.*\n+- ", re.M)
+
+
+@pytest.mark.parametrize("notes, ok", [
+    ("### Fixed\n\n- Two.\n", True),
+    ("### Removed\n- One.\n\n### Known limitations\n\n- Unsigned.\n", True),
+    # review-qa-pr9 F1: limitations alone list no change
+    ("### Known limitations\n\n- Unsigned.\n", False),
+    ("### Fixed\n\n", False),
+    ("#### Fixed\n\n- Two.\n", False),
+    ("- Two.\n", False),
+])
+def test_change_entry_needs_a_change_type_with_a_bullet(notes, ok):
+    assert bool(CHANGE_ENTRY.search(notes)) is ok
+
+
 def test_the_changelog_has_an_entry_for_the_source_version(tmp_path):
     notes = source_release_notes(tmp_path)
-    assert "### Added" in notes and "## [" not in notes
+    assert CHANGE_ENTRY.search(notes) and "## [" not in notes
 
 
 def test_the_release_notes_have_only_absolute_links(tmp_path):
